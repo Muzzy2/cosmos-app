@@ -794,11 +794,11 @@
     }
 
     _event(key, text) {
-      if (this.gain < 0.5) return; // only the world you are mostly in may speak to you
+      if (this.gain < 0.71) return; // only the world you are mostly in may speak to you (0.71 = halfway, equal-power)
       C.uiEvents.push({ key, text });
     }
     _found(key, text) {
-      if (this.gain < 0.5 || C.found.has(key)) return;
+      if (this.gain < 0.71 || C.found.has(key)) return;
       C.found.add(key);
       this._event(key, text);
     }
@@ -1005,7 +1005,7 @@
     _cosmicEvents(dt) {
       this.eventT -= dt;
       this.flipT = Math.max(0, this.flipT - dt);
-      if (this.eventT <= 0 && this.intro < 0.1 && this.gain > 0.5) {
+      if (this.eventT <= 0 && this.intro < 0.1 && this.gain > 0.71) {
         this.eventT = 70 + Math.random() * 90;
         if (Math.random() < 0.6) {
           const cam = this.cam, a = Math.random() * TAU;

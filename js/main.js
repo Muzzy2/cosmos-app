@@ -13,7 +13,7 @@
 
   // ------------------------------------------------------------------ settings
   const settings = Object.assign({
-    volume: 0.6, musicVolume: 0.85, intensity: 0.6, trails: 0.62, quality: 'high',
+    volume: 0.6, musicVolume: 0.8, intensity: 0.6, trails: 0.62, quality: 'high',
     strongGuard: true, reduced: false, synth: true, hints: true, wisp: true,
   }, C.storage.get('settings', {}));
   const saveSettings = () => C.storage.set('settings', settings);
@@ -59,7 +59,7 @@
     let u = uniCache.get(world.seed);
     const fresh = !u;
     if (!u) {
-      u = new C.Universe(audio, music);
+      u = new C.Universe(audio.forWorld({ get genus() { return u.genus; } }), music);
       u.renderer = renderer;
       u.load(world);
       uniCache.set(world.seed, u);
@@ -151,11 +151,14 @@
   }
 
   // ------------------------------------------------------------------ waking up
+  let composer = null;
   function wake() {
     if (state !== 'intro') return;
     state = 'live';
     audio.start();
     audio.setSynthOn(settings.synth);
+    composer = audio.composer = new C.Composer(audio);
+    composer.setWorld(uni);
     if (TOUCH) enableMotion();
     uni.introTarget = 0;
     uni.bangFrame = true;
@@ -667,6 +670,9 @@
   $('sReduced').onchange = (e) => { settings.reduced = e.target.checked; saveSettings(); };
   $('sSynth').onchange = (e) => { settings.synth = e.target.checked; audio.setSynthOn(settings.synth); saveSettings(); };
   $('sHints').onchange = (e) => { settings.hints = e.target.checked; saveSettings(); };
+  const sScore = $('sScore');
+  sScore.value = audio.scoreVolume;
+  sScore.oninput = () => audio.setScoreVolume(+sScore.value);
   $('sHaptics').checked = C.haptics.on;
   $('sHaptics').onchange = (e) => { C.haptics.on = e.target.checked; C.storage.set('haptics', C.haptics.on); C.haptic('tap'); };
   $('bInstall').onclick = () => C.install();
@@ -899,7 +905,8 @@
     u.shockMul = (0.55 + 0.75 * settings.intensity) * (settings.reduced ? 0.7 : 1);
     u.sim.tilt[0] = tilt[0];
     u.sim.tilt[1] = tilt[1];
-    u.setGain(gain);
+    // equal-power crossfade: loudness stays level all the way through the membrane
+    u.setGain(Math.sin((C.clamp(gain, 0, 1) * Math.PI) / 2));
     try {
       u.update(dt, realDt, ticks);
     } catch (err) {
@@ -948,6 +955,7 @@
       music.update(realDt);
       audio.update(realDt);
       const ticks = audio.pollTicks(0.12);
+      if (composer) composer.onTicks(ticks, cur.uni);
       ptr.speed *= Math.exp(-realDt * 6);
       // pointer, in the coordinates of the world you are in
       uni.cursor.x = ptr.wx; uni.cursor.y = ptr.wy;
@@ -1020,6 +1028,34 @@
     get state() { return state; }, get layers() { return { outer: outer && outer.world.name, cur: cur.world.name, inner: inner && inner.world.name }; },
     zoomIn: () => { ensureInner(); auto = { dir: -1 }; }, zoomOut: () => { auto = { dir: 1 }; },
   };
+  // Test hook: record what you'd hear for `sec` seconds and save it as a WAV (needs `node serve.js --dev`).
+  C.recordWav = (sec, name) => new Promise((resolve, reject) => {
+    if (!audio.ctx) return reject(new Error('not awake'));
+    const ctx = audio.ctx, sp = ctx.createScriptProcessor(4096, 2, 2), L = [], R = [];
+    let n = 0;
+    const want = Math.floor(sec * ctx.sampleRate);
+    sp.onaudioprocess = (e) => {
+      if (n >= want) return;
+      L.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      R.push(new Float32Array(e.inputBuffer.getChannelData(1)));
+      n += e.inputBuffer.length;
+      if (n < want) return;
+      audio.out.disconnect(sp);
+      sp.disconnect();
+      const len = Math.min(n, want), buf = new ArrayBuffer(44 + len * 4), v = new DataView(buf);
+      const str = (o, x) => { for (let i = 0; i < x.length; i++) v.setUint8(o + i, x.charCodeAt(i)); };
+      str(0, 'RIFF'); v.setUint32(4, 36 + len * 4, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+      v.setUint16(22, 2, true); v.setUint32(24, ctx.sampleRate, true); v.setUint32(28, ctx.sampleRate * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true);
+      str(36, 'data'); v.setUint32(40, len * 4, true);
+      let o = 44, i = 0;
+      for (let b = 0; b < L.length && i < len; b++) for (let j = 0; j < L[b].length && i < len; j++, i++) {
+        v.setInt16(o, Math.max(-1, Math.min(1, L[b][j])) * 32767, true); v.setInt16(o + 2, Math.max(-1, Math.min(1, R[b][j])) * 32767, true); o += 4;
+      }
+      fetch('/__save/' + name, { method: 'POST', body: new Blob([buf]) }).then((r) => resolve(r.status), reject);
+    };
+    audio.out.connect(sp);
+    sp.connect(ctx.destination); // a ScriptProcessor only runs when connected; it outputs silence
+  });
   C.debug = () => ({
     state, fps: Math.round(fps), world: cur.world.name, genus: cur.uni.genus, visitor: cur.world.visitor, style: C.STYLES[cur.uni.style || 0].name,
     depth: cur.depth, viewH: +cam.viewH.toFixed(2), layers: C.app.layers, live: renderer.layers.size, remembered: uniCache.size,

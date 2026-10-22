@@ -1,8 +1,22 @@
 'use strict';
 // Sound engine: every voice here is triggered by something that lives in the world.
-// Master chain: voices -> synth lowpass -> synth bus -> (reverb, delay) -> master -> limiter -> out.
+// Master chain: voices -> synth lowpass -> synth bus -> (reverb, delay) -> master (the universe's mix)
+// -> high-pass -> glue compressor -> sum. Your song goes straight to the sum, untouched. The sum ->
+// volume -> a safety limiter that only catches stray peaks -> out.
 (function () {
   const C = window.COSMOS;
+
+  // Disconnect a node when the audio clock (not the wall clock) reaches `end`: correct while paused
+  // and in offline renders, where idle nodes left connected would pile up and slow everything.
+  function releaseAt(ctx, node, end) {
+    const s = ctx.createConstantSource();
+    s.offset.value = 0;
+    s.start(Math.max(ctx.currentTime, end - 0.01));
+    s.stop(end);
+    s.onended = () => { try { node.disconnect(); } catch (e) {} };
+  }
+
+  const OCTAVE_UP = { glass: 1, celesta: 1, kalimba: 1, fmbell: 1, chip: 1, flute: 1, glassharp: 1 };
 
   class AudioEngine {
     constructor() {
@@ -19,6 +33,18 @@
       this.volume = C.storage.get('volume', 0.6);
       this.synthOn = true;
       this.duck = 1;
+      this.composer = null; // set by main: the score, whose current chord colours the creatures' notes
+      this.defaultFam = 'tide';
+      this.scoreVolume = C.storage.get('scoreVolume', 0.8);
+    }
+
+    static peakCurve() {
+      const N = 32769, c = new Float32Array(N), T = Math.pow(10, -2 / 20);
+      for (let i = 0; i < N; i++) {
+        const x = ((i / (N - 1)) * 2 - 1) * 4, a = Math.abs(x);
+        c[i] = Math.sign(x) * (a <= T ? a : T + (1 - T) * Math.tanh((a - T) / (1 - T)));
+      }
+      return c;
     }
 
     now() {
@@ -31,29 +57,60 @@
       return 60 / this.bpm;
     }
 
-    start() {
+    // ctxOverride: an OfflineAudioContext, so tests can render and measure the real engine
+    start(ctxOverride) {
       if (this.started) return;
       const AC = window.AudioContext || window.webkitAudioContext;
       // iOS: without this, Web Audio is silenced by the ringer switch
-      try { if ('audioSession' in navigator) navigator.audioSession.type = 'playback'; } catch (e) {}
-      const ctx = (this.ctx = new AC({ latencyHint: 'interactive' }));
+      if (!ctxOverride) try { if ('audioSession' in navigator) navigator.audioSession.type = 'playback'; } catch (e) {}
+      const ctx = (this.ctx = ctxOverride || new AC({ latencyHint: 'interactive' }));
       this.started = true;
       this.clockStart = ctx.currentTime + 0.15;
       this.nextTick = 0;
       this.slotCounts.clear();
 
-      this.limiter = ctx.createDynamicsCompressor();
-      this.limiter.threshold.value = -14;
-      this.limiter.knee.value = 8;
-      this.limiter.ratio.value = 12;
-      this.limiter.attack.value = 0.004;
-      this.limiter.release.value = 0.25;
+      // the universe's own mix gets glued together gently
       this.master = ctx.createGain();
-      this.master.gain.value = 0;
-      this.master.gain.setTargetAtTime(this.volume, ctx.currentTime + 0.05, 1.2);
+      this.master.gain.value = 1;
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 32;
+      hp.Q.value = 0.6;
+      this.glue = ctx.createDynamicsCompressor();
+      this.glue.threshold.value = -22;
+      this.glue.knee.value = 12;
+      this.glue.ratio.value = 2.5;
+      this.glue.attack.value = 0.025;
+      this.glue.release.value = 0.35;
+      this.makeup = ctx.createGain();
+      this.makeup.gain.value = 1.5; // set from a live recording: about -17 LUFS at the default volume
+      // a gentle presence shelf: almost everything here is made of sines, which reads as muffled on a phone
+      const air = ctx.createBiquadFilter();
+      air.type = 'highshelf';
+      air.frequency.value = 4000;
+      air.gain.value = 2;
+      this.master.connect(hp);
+      hp.connect(this.glue);
+      this.glue.connect(air);
+      air.connect(this.makeup);
+      this.sum = ctx.createGain();
+      this.makeup.connect(this.sum);
+      // volume (fades in on waking), then a peak guard: exactly linear below -2 dBFS, rounding off
+      // only what would clip. (A DynamicsCompressor can't do this job: it adds ~1 dB of makeup gain
+      // and 6 ms of latency to everything, which the song test caught.)
+      this.vol = ctx.createGain();
+      this.vol.gain.value = 0;
+      this.vol.gain.setTargetAtTime(this.volume, ctx.currentTime + 0.05, 1.2);
+      const pre = ctx.createGain();
+      pre.gain.value = 0.25; // the curve spans +-4 (12 dB above full scale) before it saturates
+      this.limiter = ctx.createWaveShaper();
+      this.limiter.curve = AudioEngine.peakCurve();
+      this.limiter.oversample = '4x';
       this.out = ctx.createGain();
-      this.out.gain.value = 0.9;
-      this.master.connect(this.limiter);
+      this.out.gain.value = 1;
+      this.sum.connect(this.vol);
+      this.vol.connect(pre);
+      pre.connect(this.limiter);
       this.limiter.connect(this.out);
       this.out.connect(ctx.destination);
       this.outAnalyser = ctx.createAnalyser();
@@ -63,12 +120,17 @@
 
       // shared FX
       this.reverb = ctx.createConvolver();
-      this.reverb.buffer = this._impulse(4.8);
+      this.reverb.buffer = this._impulse(4.2);
       this.reverbIn = ctx.createGain();
       this.reverbIn.gain.value = 1;
       this.reverbOut = ctx.createGain();
-      this.reverbOut.gain.value = 0.55;
-      this.reverbIn.connect(this.reverb);
+      this.reverbOut.gain.value = 0.5;
+      // keep the reverb out of the low end, where it turns to mud
+      const revHP = ctx.createBiquadFilter();
+      revHP.type = 'highpass';
+      revHP.frequency.value = 220;
+      this.reverbIn.connect(revHP);
+      revHP.connect(this.reverb);
       this.reverb.connect(this.reverbOut);
       this.reverbOut.connect(this.master);
 
@@ -115,27 +177,56 @@
       this.synthBus.connect(this.dlySend);
       this.dlySend.connect(this.delayIn);
 
-      // music bus: uploaded songs play here (captured tabs/mic are analysed only, never re-played)
+      // music bus: uploaded songs play here, straight to the sum: no compression, no colouring
+      // (captured tabs/mic are analysed only, never re-played)
       this.musicBus = ctx.createGain();
-      this.musicBus.gain.value = C.storage.get('musicVolume', 0.85);
-      this.musicBus.connect(this.master);
+      this.musicBus.gain.value = C.storage.get('musicVolume', 0.8);
+      this.musicBus.connect(this.sum);
+
+      // the score: the composer's band, with its own lowpass (time-slowing and diving sink it too)
+      this.scoreBus = ctx.createGain();
+      this.scoreBus.gain.value = 0;
+      this.scoreLP = ctx.createBiquadFilter();
+      this.scoreLP.type = 'lowpass';
+      this.scoreLP.frequency.value = 18000;
+      this.scoreLP.Q.value = 0.5;
+      this.scoreBus.connect(this.scoreLP);
+      this.scoreLP.connect(this.master);
+      const sRev = ctx.createGain();
+      sRev.gain.value = 0.38;
+      this.scoreLP.connect(sRev);
+      sRev.connect(this.reverbIn);
+      const sDly = ctx.createGain();
+      sDly.gain.value = 0.1;
+      this.scoreLP.connect(sDly);
+      sDly.connect(this.delayIn);
+
 
       this.noiseBuf = this._noise(2);
       this._buildDroneBus();
       this._buildStir();
     }
 
+    // A hall: 18 ms pre-delay, a few early reflections, then a decorrelated stereo tail whose highs
+    // die faster than its lows (as air and walls do). RT60 = sec.
     _impulse(sec) {
       const ctx = this.ctx, sr = ctx.sampleRate, len = Math.floor(sr * sec);
       const buf = ctx.createBuffer(2, len, sr);
+      const pre = Math.floor(sr * 0.018);
       for (let ch = 0; ch < 2; ch++) {
         const d = buf.getChannelData(ch);
         let lp = 0;
-        for (let i = 0; i < len; i++) {
-          const t = i / len;
-          const v = (Math.random() * 2 - 1) * Math.pow(1 - t, 3.0);
-          lp += (v - lp) * (0.18 + 0.7 * (1 - t));
-          d[i] = lp * (i < sr * 0.012 ? i / (sr * 0.012) : 1);
+        for (let i = pre; i < len; i++) {
+          const t = (i - pre) / sr;
+          const env = Math.exp((-6.9 * t) / sec);
+          const v = (Math.random() * 2 - 1) * env;
+          const k = 0.08 + 0.75 * Math.exp(-t / (sec * 0.35)); // darker as it decays
+          lp += (v - lp) * k;
+          d[i] = lp * Math.min(1, (i - pre) / (sr * 0.03)) * 0.9;
+        }
+        for (let r = 0; r < 7; r++) {
+          const at = pre + Math.floor(sr * (0.006 + Math.random() * 0.06));
+          if (at < len) d[at] += (Math.random() < 0.5 ? -1 : 1) * (0.5 - r * 0.05);
         }
       }
       return buf;
@@ -157,7 +248,11 @@
     setVolume(v) {
       this.volume = v;
       C.storage.set('volume', v);
-      if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.1);
+      if (this.vol) this.vol.gain.setTargetAtTime(v, this.ctx.currentTime, 0.1);
+    }
+    setScoreVolume(v) {
+      this.scoreVolume = v;
+      C.storage.set('scoreVolume', v);
     }
     setMusicVolume(v) {
       C.storage.set('musicVolume', v);
@@ -260,139 +355,59 @@
       pan.connect(this.synthIn);
       const timbre = spec.timbre == null ? 0.3 : spec.timbre;
       const dur = spec.dur || (timbre < 0.33 ? 2.2 : timbre < 0.66 ? 2.6 : 0.9);
+      // the world's band decides what a creature sounds like; its timbre picks soft, middle or edgy
+      const fam = C.familyOf(spec.fam || this.defaultFam);
+      const instName = C.INSTR[spec.voice] ? spec.voice : fam.notes[timbre < 0.33 ? 0 : timbre < 0.66 ? 1 : 2];
+      const inst = C.INSTR[instName];
+      const chord = this.composer && this.composer.chordPcs;
       let end = t;
       for (const m of notes) {
-        const f = spec.freq || C.midiToFreq(m);
-        end = Math.max(end, spec.voice ? this._voiceKind(spec.voice, t, f, vel, dur, pan) : this._voice(t, f, vel, timbre, dur, pan));
+        // bell-like voices sound an octave above the written note, as a celesta does
+        const f = spec.freq || C.midiToFreq(m + (OCTAVE_UP[instName] ? 12 : 0));
+        // notes outside the score's current chord still sound, but as quieter passing colour
+        const pc = ((Math.round(m) % 12) + 12) % 12;
+        const v = chord && !spec.freq && !chord.has(pc) ? vel * 0.6 : vel;
+        end = Math.max(end, inst(this, t, f, v, dur, pan));
       }
       this.voiceEnds.push(end);
       this.level = Math.min(2, this.level + vel * 1.5);
-      setTimeout(() => {
-        try {
-          pan.disconnect();
-        } catch (e) {}
-      }, (end - ctx.currentTime + 0.3) * 1000);
+      releaseAt(ctx, pan, end + 0.3);
     }
 
-    _voice(t, f, vel, timbre, dur, dest) {
-      const ctx = this.ctx;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0, t);
-      g.connect(dest);
-      const oscs = [];
-      const osc = (type, freq, gain) => {
-        const o = ctx.createOscillator();
-        o.type = type;
-        o.frequency.value = freq;
-        let node = o;
-        if (gain != null) {
-          const og = ctx.createGain();
-          og.gain.value = gain;
-          o.connect(og);
-          node = og;
-        }
-        oscs.push(o);
-        return { o, node };
-      };
-      let end;
-      if (timbre < 0.33) {
-        // glass: sine with a few inharmonic shimmers
-        const a = osc('sine', f, 1), b = osc('sine', f * 2.0, 0.16), c = osc('sine', f * 3.01, 0.05 + timbre * 0.15);
-        a.node.connect(g); b.node.connect(g); c.node.connect(g);
-        g.gain.linearRampToValueAtTime(vel, t + 0.008);
-        g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
-        end = t + dur;
-      } else if (timbre < 0.66) {
-        // FM bell
-        const ratio = [1.4, 2.0, 3.5, 2.76][Math.floor((timbre - 0.33) * 12) % 4];
-        const car = osc('sine', f);
-        const mod = osc('sine', f * ratio);
-        const mg = ctx.createGain();
-        mg.gain.setValueAtTime(f * (1.5 + timbre * 3), t);
-        mg.gain.exponentialRampToValueAtTime(f * 0.05, t + dur * 0.7);
-        mod.o.connect(mg);
-        mg.connect(car.o.frequency);
-        car.node.connect(g);
-        g.gain.linearRampToValueAtTime(vel * 0.9, t + 0.004);
-        g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
-        end = t + dur;
-      } else {
-        // reed / pluck through a closing filter
-        const a = osc('sawtooth', f, 0.5), b = osc('triangle', f * 1.004, 0.6);
-        const lp = ctx.createBiquadFilter();
-        lp.type = 'lowpass';
-        lp.Q.value = 3 + timbre * 4;
-        lp.frequency.setValueAtTime(Math.min(16000, f * 10), t);
-        lp.frequency.exponentialRampToValueAtTime(Math.max(80, f * 1.3), t + 0.35);
-        a.node.connect(lp); b.node.connect(lp);
-        lp.connect(g);
-        g.gain.linearRampToValueAtTime(vel * 0.7, t + 0.006);
-        g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
-        end = t + dur;
+    // One note from the instrument library into the score, through one of five fixed stereo positions
+    // (no per-note panner: the score plays hundreds of notes a minute, and phones notice).
+    playInst(name, midi, time, vel, dur, pan) {
+      if (!this.ctx) return 0;
+      const inst = C.INSTR[name];
+      if (!inst) return 0;
+      if (!this.scorePans) {
+        this.scorePans = [-0.6, -0.3, 0, 0.3, 0.6].map((x) => {
+          const p = this.ctx.createStereoPanner();
+          p.pan.value = x;
+          p.connect(this.scoreBus);
+          return p;
+        });
       }
-      for (const o of oscs) {
-        o.start(t);
-        o.stop(end + 0.05);
-      }
-      oscs[0].onended = () => {
-        try {
-          g.disconnect();
-        } catch (e) {}
-      };
-      return end;
+      const t = Math.max(time, this.ctx.currentTime);
+      const lane = Math.round(C.clamp((pan || 0) / 0.3, -2, 2)) + 2;
+      // a few cents of drift per note, so held tones never sound sequenced
+      const drift = Math.pow(2, ((Math.random() - 0.5) * 8) / 1200);
+      return inst(this, t, C.midiToFreq(midi) * drift, vel, dur, this.scorePans[lane]);
     }
 
-    // Instrument families for the other genera.
-    _voiceKind(kind, t, f, vel, dur, dest) {
-      const ctx = this.ctx;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(1, t);
-      g.connect(dest);
-      const oscs = [];
-      const partial = (freq, gain, decay, attack, type) => {
-        const o = ctx.createOscillator();
-        o.type = type || 'sine';
-        o.frequency.value = freq;
-        const og = ctx.createGain();
-        og.gain.setValueAtTime(0, t);
-        og.gain.linearRampToValueAtTime(gain * vel, t + (attack || 0.003));
-        og.gain.exponentialRampToValueAtTime(0.0006, t + decay);
-        o.connect(og);
-        og.connect(g);
-        oscs.push(o);
-        return o;
-      };
-      let end;
-      if (kind === 'bowl') {
-        // singing bowl: inharmonic partials, each a beating pair
-        const parts = [[1, 1], [2.71, 0.4], [5.15, 0.18], [8.17, 0.07]];
-        for (const [r, a] of parts) {
-          partial(f * r, a * 0.6, dur / (0.7 + r * 0.25), 0.03);
-          partial(f * r + 0.6 + r * 0.4, a * 0.45, dur / (0.7 + r * 0.25), 0.05);
-        }
-        end = t + dur;
-      } else if (kind === 'marimba') {
-        partial(f, 0.9, dur, 0.002);
-        partial(f * 4, 0.22, 0.18, 0.001);
-        partial(f * 9.9, 0.06, 0.06, 0.001);
-        end = t + dur;
-      } else {
-        // drop: a wet, falling pluck
-        const o = partial(f, 0.85, dur, 0.002);
-        o.frequency.setValueAtTime(f * 1.7, t);
-        o.frequency.exponentialRampToValueAtTime(f, t + 0.05);
-        partial(f * 2.01, 0.18, dur * 0.4, 0.002);
-        end = t + dur;
-      }
-      for (const o of oscs) {
-        o.start(t);
-        o.stop(end + 0.05);
-      }
-      oscs[0].onended = () => { try { g.disconnect(); } catch (e) {} };
-      return end;
+    // A world's view of the engine: its notes are played by its own band.
+    forWorld(u) {
+      const eng = this;
+      return new Proxy(eng, {
+        get(target, k) {
+          if (k === 'play') return (spec, time) => eng.play(Object.assign({ fam: u.genus }, spec), time);
+          if (k === 'requestNote') return (spec) => eng.requestNote(Object.assign({ fam: u.genus }, spec));
+          const v = target[k];
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+        set(target, k, v) { target[k] = v; return true; },
+      });
     }
-
-
 
     // Pulsar heartbeat: a soft pitched kick.
     thump(time, freq, vel, pan) {
@@ -486,6 +501,9 @@
       this.synthLP.frequency.cancelScheduledValues(t);
       this.synthLP.frequency.setTargetAtTime(500, t, dur * 0.3);
       this.synthLP.frequency.setTargetAtTime(18000, t + dur, 0.6);
+      this.scoreLP.frequency.cancelScheduledValues(t);
+      this.scoreLP.frequency.setTargetAtTime(700, t, dur * 0.3);
+      this.scoreLP.frequency.setTargetAtTime(18000, t + dur, 0.6);
     }
 
     // Continuous voices ----------------------------------------------------------------
@@ -731,6 +749,7 @@
       if (!this.ctx) return;
       const t = this.ctx.currentTime;
       this.synthLP.frequency.setTargetAtTime(18000 * Math.pow(0.05, amount), t, 0.15);
+      this.scoreLP.frequency.setTargetAtTime(18000 * Math.pow(0.05, amount), t, 0.15);
       this.revSend.gain.setTargetAtTime(0.45 + amount * 0.6, t, 0.2);
     }
 
