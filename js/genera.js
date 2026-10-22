@@ -307,6 +307,8 @@
     }
   }
 
+  Mycelium.prototype.foodAt = function (x, y) { return this.buf ? C.clamp(fieldAt(this.buf, x, y, 0) / 3, 0, 1) * 0.35 : 0; };
+
   // ==================================================================== ORRERY
   // A music box of gravity. Planets sing whenever they cross one of the sun's gates; their pitch is their
   // distance from the sun, so eccentric orbits play melodies and Kepler's law plays the rhythm.
@@ -826,6 +828,8 @@
       return out;
     }
   }
+
+  Skin.prototype.foodAt = function (x, y) { return this.buf ? C.clamp(fieldAt(this.buf, x, y, 1) * 3, 0, 1) * 0.5 : 0; };
 
   // ==================================================================== RESONANCE
   // A Chladni plate. Bowls ring on their own rhythms; every sounding note adds its standing-wave figure,

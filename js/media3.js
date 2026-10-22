@@ -347,10 +347,14 @@
       this.u.audio.play({ midi: this.u.midiOf(i), voice: 'marimba', vel: 0.24 });
       this.u._found('l-rule', 'the laws of life just changed: ' + RULES[this.rule][0]);
     }
+    foodAt(x, y) { return this.prev ? C.fieldAt(this.prev, x, y, 0) * 0.5 : 0; }
+    graze(x, y, amt) { (this.gz || (this.gz = new C.GrazeMap())).add(x, y, amt); }
     field() {
       this.brush.fill(0);
       this.brushes.forEach((b, i) => this.brush.set(b, i * 4));
-      const n = this.brushes.length;
+      let n = this.brushes.length;
+      // only heavy grazing clears cells here (Life's eraser is all or nothing)
+      if (this.gz) for (const b of this.gz.brushes(Math.min(3, 12 - n), 40)) if (b[3] <= -0.4) { b[3] = -1; b[2] = 0.45; this.brush.set(b, n * 4); n++; }
       this.brushes = [];
       const steps = Math.min(2, this.steps);
       this.steps = 0;

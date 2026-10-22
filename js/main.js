@@ -63,16 +63,55 @@
       u.renderer = renderer;
       u.load(world);
       uniCache.set(world.seed, u);
+      // COSMOS 4: a world you have been to before wakes up from its memory (and lives through the time
+      // you were away); a new one is remembered from now on
+      if (C.multiverse.has(world.seed)) {
+        u.restoring = true;
+        C.multiverse.wakeWorld(u).then((rep) => { u.restoring = false; u.restored = !!rep; woke(u, rep); }, () => { u.restoring = false; });
+      }
+      C.multiverse.remember(world);
       if (uniCache.size > 28) {
         for (const [seed, old] of uniCache) {
           if ([cur, inner, outer].some((L) => L && L.uni === old)) continue;
+          C.multiverse.save(old);
           old.dispose();
           uniCache.delete(seed);
           break;
         }
       }
-    } else uniCache.delete(world.seed), uniCache.set(world.seed, u);
+    } else {
+      uniCache.delete(world.seed), uniCache.set(world.seed, u);
+      const away = u.lastWall ? Date.now() - u.lastWall : 0;
+      if (away > 20000 && u.singers.length && !u.restoring) { const eco = C.Eco.advance(u, away, u.lastWall, C.hash(world.seed, u.time | 0)); C.Observatory.rebase(u); woke(u, { away, eco }); }
+    }
     return { u, fresh };
+  }
+  // what changed while you were elsewhere, told once when you next arrive there
+  function woke(u, rep) {
+    u.lastWall = Date.now();
+    if (!rep) return;
+    const parts = awayParts(rep);
+    if (parts.length) u.awayReport = parts;
+    // told once you're awake and there (on the sleeping start screen it waits for your first touch)
+    if (cur && u === cur.uni && state === 'live') tellAway(u);
+  }
+  function awayParts(rep) {
+    const parts = [];
+    const e = rep.eco;
+    if (e && e.slices >= 2) {
+      const mins = Math.round(e.simSeconds / 60);
+      parts.push(e.born + ' born, ' + e.died + ' died in ' + (mins >= 2 ? mins + ' minutes' : 'a minute') + ' of their time');
+      if (e.after && e.before && e.after.hunters > e.before.hunters + 2) parts.push('hunters are rising');
+      if (e.after && e.before && Math.abs(e.after.climate - e.before.climate) > 0.03) parts.push(e.after.climate > e.before.climate ? 'they are adapting to warmth' : 'they are adapting to cold');
+      if (e.after && e.after.n === 0) parts.push('none survived');
+    }
+    if (rep.arrived) parts.push(rep.arrived + ' newcomer' + (rep.arrived > 1 ? 's' : '') + ' arrived from another world');
+    return parts;
+  }
+  function tellAway(u) {
+    if (!u.awayReport) return;
+    showToast('while you were away', u.awayReport.join(' · '));
+    u.awayReport = null;
   }
   function makeLayer(world, cx, cy, depth) {
     const { u, fresh } = getUniverse(world);
@@ -84,13 +123,14 @@
     u.introTarget = 0;
     u.introCenter = [cx, cy];
     u.bangFrame = u.genus === 'tide';
-    if (fresh && (u.genus === 'tide' || world.visitor === 'singers')) u.populate(cx, cy, 8);
+    if (fresh && !u.restoring && (u.genus === 'tide' || world.visitor === 'singers')) u.populate(cx, cy, 8);
     if (fresh && musicKey) u.fitKey(music.chromaLong, musicKey);
     u.setGain(0);
     return { uni: u, gpu, world, depth, prevCam: null, seed: world.seed, cam: { x: cx, y: cy, viewH: 13, roll: 0, h: 1 } };
   }
   function dropLayer(L) {
     if (!L) return;
+    C.multiverse.save(L.uni);
     if (L.anchorObj) { L.anchorObj.grabbed = false; L.anchorObj = null; }
     L.uni.setGain(0);
     L.uni.dispose();
@@ -110,7 +150,7 @@
     renderer.seedDust(0, 0, 3.2);
     cur = { uni: u, gpu, world: originWorld, depth: 0, prevCam: null, seed: ORIGIN, cam: null };
     const r = C.rng(5);
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < (u.restoring ? 0 : 7); i++) {
       const sp = u.world.species[i % u.world.species.length];
       const a = r() * Math.PI * 2;
       u.spawnSinger(Math.cos(a) * 2, Math.sin(a) * 2, u._genomeFrom(sp));
@@ -163,7 +203,8 @@
     if (TOUCH) enableMotion();
     uni.introTarget = 0;
     uni.bangFrame = true;
-    uni.populate(0, 0, 6);
+    if (!uni.restoring && !uni.restored) uni.populate(0, 0, 6);
+    else setTimeout(() => tellAway(uni), 2500);
     cam.tViewH = 13;
     $('intro').classList.add('gone');
     body.classList.remove('asleep');
@@ -289,6 +330,7 @@
   function arrived() {
     uni = cur.uni;
     did.add('dive');
+    if (uni.awayReport) setTimeout(() => { if (cur.uni === uni) tellAway(uni); }, 1800);
     const w = cur.world;
     const last = arrivedAt.get(cur.seed) || -1e9;
     arrivedAt.set(cur.seed, performance.now());
@@ -606,7 +648,7 @@
   }
 
   // ------------------------------------------------------------------ interface
-  const panels = ['pMusic', 'pSettings', 'pHelp'];
+  const panels = ['pMusic', 'pSettings', 'pHelp', 'pJournal'];
   const anyPanelOpen = () => panels.some((p) => $(p).classList.contains('open'));
   function closePanels() { panels.forEach((p) => $(p).classList.remove('open')); }
   function togglePanel(id) {
@@ -626,6 +668,14 @@
   $('bDraw').onclick = () => { drawMode = !drawMode; $('bDraw').classList.toggle('on', drawMode); };
   $('bMusic').onclick = () => { if (state === 'intro') wake(); togglePanel('pMusic'); };
   $('bSettings').onclick = () => togglePanel('pSettings');
+  $('bJournal').onclick = () => { $('bJournal').classList.remove('news'); togglePanel('pJournal'); renderJournal(); };
+  $('bForget').onclick = async () => {
+    if (!confirm('Forget every world, every species and every discovery on this device? This cannot be undone.')) return;
+    await C.multiverse.forgetAll();
+    C.journal.clear();
+    // start again from a new seed of a universe (the worlds alive in memory would otherwise live on)
+    location.reload();
+  };
   $('bHelp').onclick = () => togglePanel('pHelp');
   $('bFull').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); };
   $('mFile').onclick = () => $('file').click();
@@ -718,6 +768,7 @@
   $('sHaptics').checked = C.haptics.on;
   $('sHaptics').onchange = (e) => { C.haptics.on = e.target.checked; C.storage.set('haptics', C.haptics.on); C.haptic('tap'); };
   $('bInstall').onclick = () => C.install();
+  $('sBuild').textContent = 'build ' + C.BUILD.sha + (C.BUILD.date ? ' · ' + C.BUILD.date : '');
   if (C.device.ios && !C.device.standalone) $('installHow').textContent = 'Make it an app: Safari → Share → Add to Home Screen.';
   // iOS can pause sound while the app is in the background; the next touch brings it back
   document.addEventListener('visibilitychange', () => { if (!document.hidden && state === 'live') audio.resume(); });
@@ -784,10 +835,126 @@
     }
   }
 
+  // ------------------------------------------------------------------ the journal
+  const ago = (ms) => { const s = (Date.now() - ms) / 1000; return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 129600 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago'; };
+  const BARS = '▁▂▃▄▅▆▇█';
+  const songShape = (m) => { if (!m) return ''; const pts = [0]; for (let i = 0; i < 3; i++) pts.push(pts[i] + m[i]); const lo = Math.min(...pts), hi = Math.max(...pts); return '♪' + pts.map((p) => BARS[hi === lo ? 3 : Math.round(((p - lo) / (hi - lo)) * 7)]).join(''); };
+  const traitWords = (d) => [d[1] > 0.5 ? 'hunter' : 'grazer', d[3] < 0.3 ? 'cold-loving' : d[3] > 0.7 ? 'heat-loving' : 'temperate', d[2] > 0.6 ? 'fast' : d[2] < 0.25 ? 'slow' : ''].filter(Boolean).join(' · ');
+  function renderJournal() {
+    if (!$('pJournal').classList.contains('open')) return;
+    const u = cur.uni, here = $('jHere');
+    here.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'env';
+    const alive = u.singers.filter((x) => !x.dying).length;
+    head.textContent = cur.world.name + ' · ' + u.env.word + ' (warmth ' + u.env.warmth.toFixed(2) + ') · ' + alive + ' singers' + (u.songSpecies ? ' · the score sings the song of the ' + u.songSpecies : '');
+    here.appendChild(head);
+    if (alive) {
+      // time-lapse: watch evolution happen instead of waiting for it
+      const tl = document.createElement('button');
+      tl.className = 'wide';
+      tl.textContent = 'Let an hour pass here';
+      tl.onclick = () => timeLapse(u);
+      here.appendChild(tl);
+    }
+    const sps = (u.species || []).filter((x) => !x.extinct && x.count > 0).sort((a, b) => b.count - a.count).slice(0, 8);
+    if (!sps.length) { const p = document.createElement('div'); p.className = 'tiny'; p.textContent = alive ? 'No species told apart yet; give them a little time.' : 'Nothing that sings lives here (yet).'; here.appendChild(p); }
+    for (const sp of sps) {
+      const row = document.createElement('div');
+      row.className = 'jsp';
+      const a = document.createElement('span'); a.className = 'nm';
+      const par = (u.species || []).find((x) => x.id === sp.parent);
+      a.textContent = sp.name + (sp.status === 'emerging' ? ' (emerging)' : '') + (par ? ' ← ' + par.name : '');
+      const b = document.createElement('span'); b.className = 'tr';
+      // where its family began (lineages are inherited across worlds)
+      const lins = new Map();
+      for (const x of u.singers) if (x.sp === sp.id && !x.dying) lins.set(x.lin, (lins.get(x.lin) || 0) + 1);
+      let lin = null, ln = 0;
+      for (const [k, v] of lins) if (v > ln) { ln = v; lin = k; }
+      const fam = lin && C.multiverse.lineages[lin];
+      const from = fam && fam.home !== cur.seed ? ' · family from ' + fam.homeName : '';
+      b.textContent = sp.count + ' · ' + traitWords(sp.centroid) + (sp.foreignShare > 0.5 ? ' · newcomers' : '') + from + ' ' + songShape(sp.motif);
+      row.append(a, b);
+      here.appendChild(row);
+    }
+    drawTree(u);
+    const list = $('jList');
+    list.innerHTML = '';
+    if (!C.journal.list.length) { const p = document.createElement('div'); p.className = 'tiny'; p.textContent = 'No discoveries yet. Worlds need time: species form, hunters evolve, songs drift. Wander, come back later.'; list.appendChild(p); }
+    for (const d of C.journal.list.slice(0, 60)) {
+      const row = document.createElement('div'); row.className = 'jd';
+      const tx = document.createElement('div'); tx.className = 'tx'; tx.textContent = '★ ' + d.text;
+      const meta = document.createElement('div'); meta.className = 'meta';
+      const where = document.createElement('span'); where.textContent = d.worldName + ' · ' + ago(d.at);
+      meta.appendChild(where);
+      if (d.world !== cur.seed) { const go = document.createElement('button'); go.textContent = 'go there'; go.onclick = () => { closePanels(); visitSeed(d.world); }; meta.appendChild(go); }
+      else if (d.snapshot && C.multiverse.valid(d.snapshot)) {
+        // reproduce it: put this world back exactly as it was at the moment of the discovery
+        const re = document.createElement('button'); re.textContent = 'relive';
+        re.onclick = () => {
+          if (!confirm('Put ' + d.worldName + ' back the way it was when this happened? What lives there now will be replaced.')) return;
+          C.multiverse.restore(cur.uni, d.snapshot, true);
+          showToast('back to that moment', d.text);
+          renderJournal();
+        };
+        meta.appendChild(re);
+      }
+      row.append(tx, meta);
+      list.appendChild(row);
+    }
+  }
+  // The family tree of this world: each species is a line from when it appeared to when it died out (or
+  // now), in its own lane, with its children just below it; a child branches from its parent's line.
+  // Thickness is how many there were at their peak; colour runs from cold-loving blue to warm-loving gold.
+  function drawTree(u) {
+    const svg = $('jTree');
+    const sps = (u.species || []).filter((x) => x.born != null && (x.peak >= 6 || (!x.extinct && x.count > 0)));
+    svg.style.display = sps.length >= 2 ? 'block' : 'none';
+    if (sps.length < 2) return;
+    const t0 = Math.min(...sps.map((x) => x.born)), t1 = Math.max(u.time, t0 + 1);
+    const byId = new Map(sps.map((x) => [x.id, x]));
+    // lanes in family order: each lineage's children right below it, oldest first
+    const kids = new Map(), roots = [];
+    for (const sp of sps) { if (byId.has(sp.parent)) { if (!kids.has(sp.parent)) kids.set(sp.parent, []); kids.get(sp.parent).push(sp); } else roots.push(sp); }
+    const order = [];
+    const walk = (sp) => { order.push(sp); (kids.get(sp.id) || []).sort((a, b) => a.born - b.born).forEach(walk); };
+    roots.sort((a, b) => a.born - b.born).forEach(walk);
+    const lane = new Map(order.map((sp, i) => [sp.id, i]));
+    const X = (t) => 8 + ((t - t0) / (t1 - t0)) * 284, Y = (sp) => 6 + (lane.get(sp.id) / Math.max(1, order.length - 1)) * 100;
+    const col = (sp) => C.cssColor(C.hsl(0.6 - 0.48 * C.clamp(sp.centroid[3], 0, 1), 0.8, 0.6));
+    let out = '<line x1="8" y1="113" x2="292" y2="113" stroke="rgba(255,255,255,0.12)" stroke-width="0.5"/><text x="8" y="120">then</text><text x="292" y="120" text-anchor="end">blue loves cold · gold loves warmth · now</text>';
+    for (const sp of sps) {
+      const x0 = X(sp.born), x1 = X(sp.extinct ? (sp.extinctT || sp.born + 60) : u.time), y = Y(sp), w = 0.8 + Math.sqrt(sp.peak || 1) * 0.55;
+      const par = byId.get(sp.parent);
+      if (par) out += `<path d="M${X(sp.born).toFixed(1)},${Y(par).toFixed(1)} C${(x0 + 6).toFixed(1)},${Y(par).toFixed(1)} ${(x0 + 2).toFixed(1)},${y.toFixed(1)} ${(x0 + 8).toFixed(1)},${y.toFixed(1)}" fill="none" stroke="${col(sp)}" stroke-width="0.6" opacity="0.6"/>`;
+      out += `<line x1="${x0.toFixed(1)}" y1="${y.toFixed(1)}" x2="${Math.max(x0 + 2, x1).toFixed(1)}" y2="${y.toFixed(1)}" stroke="${col(sp)}" stroke-width="${w.toFixed(1)}" stroke-linecap="round" opacity="${sp.extinct ? 0.35 : 0.9}"/>`;
+      if (!sp.extinct && sp.count > 0) out += `<circle cx="${x1.toFixed(1)}" cy="${y.toFixed(1)}" r="${(w * 0.9).toFixed(1)}" fill="${col(sp)}"/>`;
+    }
+    svg.innerHTML = out;
+  }
+  function timeLapse(u) {
+    const now = Date.now();
+    const eco = C.Eco.advance(u, 3600e3, now - 3600e3, C.hash(u.world.seed, now));
+    C.Observatory.rebase(u);
+    u._obsT = -1e9;
+    u.lastWall = now;
+    const allow = C.flash.request(0.4);
+    u.addRing(cam.x, cam.y, 0.3, cam.viewH * 0.7, 3.5, u.palette.accent, 0.03, 0.6 * allow);
+    audio.whoosh(2.2, true);
+    const parts = awayParts({ eco });
+    showToast('an hour passes', parts.length ? parts.join(' · ') : 'little changed');
+    setTimeout(renderJournal, 400);
+  }
+  C.journal.listeners.push(() => renderJournal());
+  C.journal.load();
+  let journalT = 0;
+
   // HUD
   let hudT = 0;
   function updateHud(dt) {
     hudT -= dt;
+    journalT -= dt;
+    if (journalT <= 0) { journalT = 2; renderJournal(); }
     if (hudT > 0) return;
     hudT = 0.4;
     const w = cur.world;
@@ -795,7 +962,7 @@
     const d = cur.depth;
     const depth = d === 0 ? 'origin' : d > 0 ? 'depth ' + d : 'outside ' + -d;
     const key = C.NOTE_NAMES[((uni.root % 12) + 12) % 12] + ' ' + uni.scaleName;
-    $('worldMeta').textContent = `${C.describeWorld(w)} · ${key} · ${Math.round(audio.bpm / (1 - slow * 0.65))} bpm · ${depth}`;
+    $('worldMeta').textContent = `${C.describeWorld(w)} · ${key} · ${Math.round(audio.bpm / (1 - slow * 0.65))} bpm · ${uni.env.word} · ${depth}`;
     const census = uni.census();
     const mx = Math.max(1, ...census);
     const chord = $('chord');
@@ -921,6 +1088,84 @@
     else if (outer && cur.link && cam.viewH > IN_LO && weightOf(cam.viewH) < 0.5) becomeOuter();
   }
 
+  // ------------------------------------------------------------------ the living multiverse (COSMOS 4)
+  let mvSaveT = 20, pressureT = 10;
+  function livingWorlds() { return [outer, cur, inner].filter(Boolean).map((L) => L.uni); }
+  function livingMultiverse(realDt) {
+    const live = livingWorlds();
+    // migrants that slipped into an orb arrive in the world inside: live if it is awake, else they wait
+    for (const u of live) {
+      if (!u.emigrants.length) continue;
+      for (const em of u.emigrants.splice(0)) {
+        const target = uniCache.get(em.to);
+        const lk = links.get(em.to);
+        if (target && !target.restoring) {
+          target.immigrate([em], lk ? lk.cx : 0, lk ? lk.cy : 0, em.fromCol);
+          // a sleeping (cached) world is not in the regular saves: write it now so the newcomer is kept
+          if (!live.includes(target)) C.multiverse.save(target);
+        } else C.multiverse.addArrival(em.to, em, C.worldDefs.get(em.to));
+      }
+    }
+    // overcrowded worlds inside an orb burst out: a rift that pours their real creatures into this one
+    pressureT -= realDt;
+    if (pressureT <= 0) {
+      pressureT = 8;
+      const u = cur.uni;
+      if (!u.rift && u.intro < 0.1) for (const o of u.orbs) {
+        const child = uniCache.get(o.seed);
+        if (!child || (inner && inner.uni === child) || child.restoring || o.dying || o.grabbed) continue;
+        const crowd = child.singers.filter((x) => !x.dying).length;
+        if (crowd >= 118 && Math.random() < 0.5) {
+          const pool = child.singers.filter((x) => !x.dying && !x.leviathan).sort(() => Math.random() - 0.5).slice(0, 12);
+          const list = pool.map((x) => ({ g: x.g, energy: x.energy, sp: x.sp, gen: x.gen, home: x.home, lin: x.lin, hyb: !!x.hyb, from: child.world.seed, fromCol: child.palette.hot }));
+          for (const x of pool) x.dead = true, x.dying = 1;
+          u._rift(o, list);
+          C.multiverse.save(child); // the world they left is asleep: record that they left
+          break;
+        }
+      }
+    }
+    // the observatory watches every living world
+    C.Observatory.tick(live, { discover });
+    // memory: the worlds you are in are saved every 20 seconds (and when you leave them)
+    mvSaveT -= realDt;
+    if (mvSaveT <= 0) { mvSaveT = 20; for (const u of live) C.multiverse.save(u); diaspora(cur.uni); }
+  }
+  // a family that has spread: the same lineage alive (5 or more) in several remembered worlds
+  function diaspora(u) {
+    const reg = C.multiverse.lineages, counts = C.multiverse.lineageCounts(u);
+    for (const lin in counts) {
+      if (counts[lin] < 5 || !reg[lin]) continue;
+      const where = C.multiverse.spread(lin);
+      const done = reg[lin].reported || 1;
+      if (where.length < 2 || where.length <= done) continue;
+      reg[lin].reported = where.length;
+      C.multiverse.nameLineage(lin, reg[lin].name, reg[lin].home, reg[lin].homeName);
+      C.multiverse.saveIndex();
+      const names = where.map((w) => w.name).join(', ');
+      C.Observatory.record(u, { kind: 'diaspora', text: 'the family of the ' + reg[lin].name + ', from ' + reg[lin].homeName + ', now lives in ' + where.length + ' worlds: ' + names }, { discover });
+    }
+  }
+  // Everything goes in the journal; only the rarer kinds speak up, at most one every three minutes, so a
+  // discovery stays an event (the journal button glows when there is something new to read).
+  const LOUD = { novel: 1, hybrid: 1, invasion: 1, dialect: 1, hunters: 1, cycle: 1, chorus: 1, speciation: 1, diaspora: 1 };
+  let lastLoud = -1e9;
+  function discover(u, rec) {
+    discoveries++;
+    $('bJournal').classList.add('news');
+    if (composer && /dialect|invasion|hybrid|novel|speciation/.test(rec.kind)) composer.adoptSong(u);
+    if (u !== cur.uni || !LOUD[rec.kind] || performance.now() - lastLoud < 180000) return;
+    lastLoud = performance.now();
+    showToast('★ ' + rec.text, rec.worldName, null, false);
+    // a soft three-note chime in the world's own key, never a flash
+    const t = audio.now() + 0.05;
+    [0, 2, 4].forEach((d, i) => audio.play({ midi: u.midiOf(d + u.scale.length * 2), timbre: 0.1, vel: 0.07, pan: (i - 1) * 0.3, dur: 2.5 }, t + i * 0.12));
+    renderJournal();
+  }
+  let discoveries = 0;
+  document.addEventListener('visibilitychange', () => { if (document.hidden) for (const u of livingWorlds()) C.multiverse.save(u); });
+  addEventListener('pagehide', () => { for (const u of livingWorlds()) C.multiverse.save(u); });
+
   // ------------------------------------------------------------------ main loop
   let last = performance.now();
   let fps = 60;
@@ -950,6 +1195,7 @@
     u.sim.tilt[1] = tilt[1];
     // equal-power crossfade: loudness stays level all the way through the membrane
     u.setGain(Math.sin((C.clamp(gain, 0, 1) * Math.PI) / 2));
+    u.lastWall = Date.now();
     try {
       u.update(dt, realDt, ticks);
     } catch (err) {
@@ -1022,6 +1268,7 @@
       if (B) simulate(B, camB, dt, realDt, ticks, B === cur, t);
       for (const L of [outer, cur, inner]) if (L && L !== A && L !== B) L.uni.setGain(0);
       if (prep) simulate(prep.L, prep.cam, dt, realDt, ticks, false, 0);
+      livingMultiverse(realDt);
       for (const ev of C.uiEvents) showToast(ev.text);
       C.uiEvents.length = 0;
     }
@@ -1067,8 +1314,16 @@
     ensureInner({ x: cam.x, y: cam.y, r: 0.6, seed, c2: uni.palette.hot });
     auto = { dir: -1 };
   };
+  function visitSeed(seed) {
+    if (seed === cur.seed) return;
+    const def = C.mvDef(seed);
+    C.makeWorld(seed, def ? Object.assign({}, def) : { notGenus: [uni.genus], notStyle: [uni.style] });
+    ensureInner({ x: cam.x, y: cam.y, r: 0.6, seed, c2: uni.palette.hot });
+    auto = { dir: -1 };
+    showToast('a door opens', 'to ' + C.makeWorld(seed).name);
+  }
   C.app = {
-    get uni() { return cur.uni; }, audio, music, renderer, cam, settings, wake, visitGenus, playlist, pack,
+    get uni() { return cur.uni; }, audio, music, renderer, cam, settings, wake, visitGenus, visitSeed, playlist, pack, uniCache, links, livingWorlds,
     get state() { return state; }, get layers() { return { outer: outer && outer.world.name, cur: cur.world.name, inner: inner && inner.world.name }; },
     zoomIn: () => { ensureInner(); auto = { dir: -1 }; }, zoomOut: () => { auto = { dir: 1 }; },
   };

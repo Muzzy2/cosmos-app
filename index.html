@@ -42,6 +42,7 @@
   <button id="bPause" title="Pause (P)"><svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg></button>
   <button id="bDraw" title="Draw mode: drag draws living melodies (right-drag always draws)"><svg viewBox="0 0 24 24"><path d="M4 18c3-6 6 2 9-4s4-6 7-8"/></svg></button>
   <button id="bMusic" title="Let it listen to your music"><svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg></button>
+  <button id="bJournal" title="Journal: what has been discovered, and who lives here"><svg viewBox="0 0 24 24"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/><path d="M11 7.5l.9 1.8 2 .3-1.45 1.4.35 2-1.8-.95-1.8.95.35-2L8.1 9.6l2-.3z"/></svg></button>
   <button id="bSettings" title="Comfort &amp; settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
   <button id="bHelp" title="How to touch it"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5V14M12 17.2v.1"/></svg></button>
   <button id="bFull" title="Fullscreen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
@@ -80,6 +81,15 @@
   <input type="file" id="packFile" accept="audio/*,.wav,.mp3,.aif,.aiff,.flac,.ogg,.m4a" multiple hidden>
 </div>
 
+<div id="pJournal" class="panel ui">
+  <h3>Journal</h3>
+  <div id="jHere"></div>
+  <svg id="jTree" viewBox="0 0 300 120" preserveAspectRatio="none" aria-label="family tree of the species here"></svg>
+  <h4>Discoveries</h4>
+  <p class="tiny">Nothing here is scripted: these are things the worlds did on their own. Kept on this device.</p>
+  <div id="jList"></div>
+</div>
+
 <div id="pSettings" class="panel ui">
   <h3>Comfort</h3>
   <label>Volume <input type="range" id="sVol" min="0" max="1" step="0.01"></label>
@@ -96,6 +106,9 @@
   <button class="wide" id="bInstall" hidden>Install COSMOS as an app</button>
   <div id="installHow" class="tiny"></div>
   <div id="sStats" class="tiny"></div>
+  <div id="sBuild" class="tiny"></div>
+  <button class="wide" id="bForget">Forget this multiverse…</button>
+  <p class="tiny">Every world you visit is remembered on this device and keeps evolving while you're away.</p>
 </div>
 
 <div id="pHelp" class="panel ui">
@@ -119,6 +132,8 @@
 </div>
 
 <script src="js/util.js"></script>
+<script src="js/build.js"></script>
+<script src="js/genome.js"></script>
 <script src="js/store.js"></script>
 <script src="js/device.js"></script>
 <script src="js/world.js"></script>
@@ -131,6 +146,8 @@
 <script src="js/shaders.js"></script>
 <script src="js/render.js"></script>
 <script src="js/life.js"></script>
+<script src="js/multiverse.js"></script>
+<script src="js/observatory.js"></script>
 <script src="js/genera.js"></script>
 <script src="js/media.js"></script>
 <script src="js/media2.js"></script>

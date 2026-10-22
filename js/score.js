@@ -24,10 +24,13 @@
     for (const k in table) { x -= table[k]; if (x <= 0) return +k; }
     return +Object.keys(table)[0];
   }
+  // COSMOS 4: while themes evolve, chords lean toward the notes the living creatures actually sing, so as
+  // a population's pitches drift the harmony of its world drifts with them (set by the composer)
+  let popBias = null;
   function nextDeg(r, from, len) {
-    if (len === 7) return weighted(r, NEXT7[from]);
-    const t = {};
-    for (let d = 0; d < len; d++) if (d !== from) t[d] = d === 0 ? 2.2 : 1;
+    const t = len === 7 ? Object.assign({}, NEXT7[from]) : {};
+    if (len !== 7) for (let d = 0; d < len; d++) if (d !== from) t[d] = d === 0 ? 2.2 : 1;
+    if (popBias) for (const k in t) t[k] *= popBias(+k);
     return weighted(r, t);
   }
   // a progression that doesn't see-saw between two chords
@@ -117,8 +120,12 @@
       this.arpEuclid = [[5, 16], [7, 16], [9, 16], [11, 16], [6, 16]][Math.floor(r() * 5)];
       this.sevenths = r() < 0.5;
     }
-    // a short idea: 4-6 notes over two bars, a contour in scale steps that ends near home
+    // a short idea: 4-6 notes over two bars, a contour in scale steps that ends near home. COSMOS 4: most
+    // of the time the score borrows the song the biggest living species actually sings (observatory.js),
+    // so as their song evolves, or newcomers bring another, the music of the world changes with it.
     _makeMotif() {
+      const pop = this.uni && this.uni.songMotif;
+      if (pop && (this.r || Math.random)() < 0.75) return this._popMotif(pop, this.uni.songRhythm || 4);
       const r = this.r, n = 4 + Math.floor(r() * 3), notes = [];
       let step = r() < 0.5 ? 0 : 2, deg = 0;
       for (let i = 0; i < n && step < 30; i++) {
@@ -131,6 +138,20 @@
       notes[notes.length - 1].deg = [0, 2, 4][Math.floor(r() * 3)];
       return notes;
     }
+    _popMotif(m, rhythm) {
+      const len = C.clamp(rhythm, 2, 8), notes = [];
+      let deg = 0, step = 0;
+      for (let i = 0; i < 4; i++) { notes.push({ step, deg: C.clamp(deg, -3, 7), len }); step += len; deg += m[i]; }
+      if (step < 30) notes.push({ step, deg: 0, len: Math.min(8, 32 - step) }); // and home again
+      this.popSong = m.join(',');
+      return notes;
+    }
+    // the creatures' song changed (a dialect, or newcomers took hold): the score takes it up at once
+    adoptSong(u) {
+      if (u !== this.uni || !u.songMotif || u.songMotif.join(',') === this.popSong) return;
+      this.motif = this._popMotif(u.songMotif, u.songRhythm || 4);
+      this.phraseMotif = this._develop();
+    }
     // develop the motif: the same, inverted, backwards, stretched, or just its opening
     _develop() {
       const m = this.motif, kind = Math.floor(Math.random() * 6);
@@ -141,6 +162,15 @@
       return m;
     }
 
+    _popBias() {
+      const u = this.uni;
+      if (!u || !u.census || !u.singers || u.singers.length < 10) return null;
+      const c = u.census();
+      let tot = 0;
+      for (const x of c) tot += x;
+      if (!tot) return null;
+      return (d) => { const s = (c[u.pcOf(d)] + c[u.pcOf(d + 2)] + c[u.pcOf(d + 4)]) / tot; return 0.6 + 2.4 * s; };
+    }
     _enter(name) {
       this.sectionName = name;
       this.sec = SECTIONS[name];
@@ -148,8 +178,10 @@
       this.secCount++;
       // themes evolve: every few sections one chord of each theme changes; now and then a new motif
       const len = this.uni.scale.length;
+      popBias = this._popBias();
       if (this.secCount % 5 === 0) this.A[1 + Math.floor(Math.random() * 3)] = nextDeg(Math.random, this.A[0], len);
       if (this.secCount % 4 === 0) this.B = progression(Math.random, len, this.B[0], 4);
+      popBias = null;
       if (this.secCount % 7 === 0) { this.motif = this._makeMotif(); this.arpMode = ['up', 'updown', 'walk', 'pendulum'][Math.floor(Math.random() * 4)]; }
       this.phraseMotif = this._develop();
     }

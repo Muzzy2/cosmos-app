@@ -1540,7 +1540,7 @@ void main(){
     vec2 d = wrapW(wp - b.xy);
     float g = exp(-dot(d, d)/(b.z*b.z));
     if (b.w > 0.0) nxt = max(nxt, g*b.w*step(0.35, h31(vec3(vUv*517.0, uTime))));
-    else nxt *= 1.0 - g;
+    else nxt *= 1.0 - g*min(1.0, -b.w);
   }
   o = vec4(nxt, grow, max(nxt, c.b*0.94), 1.0);
 }

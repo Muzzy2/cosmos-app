@@ -112,7 +112,8 @@
     field() {
       this.brush.fill(0);
       this.brushes.forEach((b, i) => this.brush.set(b, i * 4));
-      const n = this.brushes.length;
+      let n = this.brushes.length;
+      if (this.gz) for (const b of this.gz.brushes(12 - n, 40)) { this.brush.set(b, n * 4); n++; }
       this.brushes = [];
       const res = C.MOBILE ? 128 : 192;
       const scale = res / 192; // the same creatures at phone resolution: a smaller kernel on a smaller grid
@@ -125,6 +126,9 @@
       };
     }
     _steps() { const n = Math.floor(this.acc || 0); this.acc = (this.acc || 0) - n; return n; }
+    // visiting singers eat the living cells; their grazing erodes the creatures of this world
+    foodAt(x, y) { return this.prev ? C.clamp(C.fieldAt(this.prev, x, y, 0), 0, 1) * 0.7 : 0; }
+    graze(x, y, amt) { (this.gz || (this.gz = new C.GrazeMap())).add(x, y, amt); }
     pick() { return null; }
   }
   C.GENUS_IMPL.lenia = Lenia;

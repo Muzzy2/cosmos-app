@@ -61,10 +61,24 @@
     };
   }
 
-  function makeSpecies(r, scaleLen, n) {
+  // COSMOS 4: founding species carry heritable traits that matter for survival, not just looks:
+  // diet (0 grazes light .. 1 hunts other creatures), climate (the warmth it thrives in) and hardiness
+  // (how far from it it can live, at a metabolic price), wander (how readily it slips through a membrane
+  // into another world), and a motif: the four-step song it sings and looks for in a mate.
+  function makeTraits(r, warmth) {
+    return {
+      diet: r() < 0.18 ? 0.62 + r() * 0.3 : r() * 0.25,
+      climate: C.clamp(warmth + (r() - 0.5) * 0.3, 0, 1),
+      hardy: 0.2 + r() * 0.3,
+      wander: 0.05 + r() * 0.3,
+      motif: [0, 1, 2, 3].map(() => [-2, -1, -1, 0, 1, 1, 2, 3][Math.floor(r() * 8)]),
+    };
+  }
+  C.makeTraits = makeTraits;
+  function makeSpecies(r, scaleLen, n, warmth) {
     const out = [];
     for (let i = 0; i < n; i++) {
-      out.push({
+      out.push(Object.assign({
         degree: Math.floor(r() * scaleLen * 2.4) - 1,
         timbre: r(),
         lobes: 3 + Math.floor(r() * 8),
@@ -73,10 +87,32 @@
         social: 0.3 + r() * 0.7,
         spike: r(),
         count: 6 + Math.floor(r() * 10),
-      });
+      }, makeTraits(C.rng(C.hash(r() * 1e9, 'traits')), warmth)));
     }
     return out;
   }
+
+  // Each kind of world has a climate: how warm it is to live in. Warm palettes nudge it up, cold ones
+  // down, and every world has slow seasons tied to the real clock, so worlds keep changing while you are
+  // elsewhere (C.envOf).
+  C.GENUS_WARMTH = {
+    tide: 0.5, mycelium: 0.45, orrery: 0.35, skin: 0.7, resonance: 0.4, attractor: 0.3, flame: 0.85, plife: 0.55,
+    murmur: 0.45, fluid: 0.5, ripple: 0.4, scope: 0.3, blackhole: 0.08, julia: 0.35, tunnel: 0.6, cathedral: 0.25,
+    life: 0.5, storm: 0.75, lenia: 0.55,
+  };
+  function baseWarmth(genus, palette) {
+    // a hot (red-gold) world is warmer than a blue one: hue distance from orange
+    const p = palette.hot, warmHue = (p[0] - p[2]) / (p[0] + p[1] + p[2] + 1e-3);
+    return C.clamp((C.GENUS_WARMTH[genus] == null ? 0.5 : C.GENUS_WARMTH[genus]) + warmHue * 0.18, 0.02, 0.98);
+  }
+  C.envOf = function (w, nowMs) {
+    const r = C.rng(C.hash(w.seed, 'season'));
+    const period = (15 + r() * 30) * 60000, phase = r();
+    const t = nowMs == null ? Date.now() : nowMs;
+    const season = 0.12 * Math.sin(2 * Math.PI * (t / period + phase));
+    const warmth = C.clamp(w.warmth + season, 0, 1);
+    return { warmth, season, word: warmth < 0.2 ? 'frozen' : warmth < 0.38 ? 'cold' : warmth < 0.62 ? 'mild' : warmth < 0.8 ? 'warm' : 'scorching' };
+  };
 
   // Genera: fundamentally different kinds of universe. Each has its own physics, life, sound and verbs.
   // Media: the physics a world is made of. Visitors: an unrelated life form living in it. Styles: how it looks.
@@ -133,6 +169,9 @@
   C.makeWorld = function (seed, opts) {
     opts = opts || {};
     if (C.worldDefs.has(seed)) return C.worldDefs.get(seed);
+    // a world remembered on this device comes back as the same kind of world (COSMOS 4)
+    const saved = C.mvDef && !opts.origin ? C.mvDef(seed) : null;
+    if (saved) opts = Object.assign({}, opts, { genus: saved.genus, style: saved.style, visitor: saved.visitor });
     const w = makeWorld(seed, opts);
     C.worldDefs.set(seed, w);
     return w;
@@ -156,11 +195,11 @@
         deep: C.hsl(0.68, 0.7, 0.045), // indigo
       };
       w.species = [
-        { degree: 0, timbre: 0.15, lobes: 5, rhythm: 4, speed: 1.0, social: 0.8, spike: 0.2, count: 14 },
-        { degree: 4, timbre: 0.5, lobes: 7, rhythm: 4, speed: 1.1, social: 0.7, spike: 0.5, count: 12 },
-        { degree: 7, timbre: 0.3, lobes: 6, rhythm: 2, speed: 1.3, social: 0.6, spike: 0.8, count: 12 },
-        { degree: 9, timbre: 0.8, lobes: 9, rhythm: 6, speed: 0.9, social: 0.9, spike: 0.3, count: 10 },
-        { degree: -3, timbre: 0.6, lobes: 4, rhythm: 8, speed: 0.7, social: 0.5, spike: 0.1, count: 6 },
+        { degree: 0, timbre: 0.15, lobes: 5, rhythm: 4, speed: 1.0, social: 0.8, spike: 0.2, count: 14, diet: 0.05, climate: 0.5, hardy: 0.3, wander: 0.15, motif: [0, 2, -1, 1] },
+        { degree: 4, timbre: 0.5, lobes: 7, rhythm: 4, speed: 1.1, social: 0.7, spike: 0.5, count: 12, diet: 0.15, climate: 0.55, hardy: 0.35, wander: 0.25, motif: [1, 1, -2, 0] },
+        { degree: 7, timbre: 0.3, lobes: 6, rhythm: 2, speed: 1.3, social: 0.6, spike: 0.8, count: 12, diet: 0.7, climate: 0.45, hardy: 0.25, wander: 0.2, motif: [-1, -1, 3, 0] },
+        { degree: 9, timbre: 0.8, lobes: 9, rhythm: 6, speed: 0.9, social: 0.9, spike: 0.3, count: 10, diet: 0.1, climate: 0.6, hardy: 0.4, wander: 0.3, motif: [2, -1, 1, -2] },
+        { degree: -3, timbre: 0.6, lobes: 4, rhythm: 8, speed: 0.7, social: 0.5, spike: 0.1, count: 6, diet: 0.02, climate: 0.4, hardy: 0.5, wander: 0.1, motif: [0, 0, 1, -1] },
       ];
     } else {
       w.name = 'The ' + pick(ADJ) + ' ' + pick(NOUN);
@@ -181,7 +220,7 @@
       w.palette = makePalette(r, r(), pick(Object.keys(SCHEMES)));
     }
     w.scale = C.SCALES[w.scaleName].slice();
-    if (!w.species) w.species = makeSpecies(r, w.scale.length, 3 + Math.floor(r() * 3));
+    const nSp = 3 + Math.floor(r() * 3); // drawn here so every later draw (and so every world) is unchanged
     w.orbSeeds = [];
     const nOrbs = opts.origin ? 3 : 2 + Math.floor(r() * 2);
     for (let i = 0; i < nOrbs; i++) w.orbSeeds.push(C.hash(seed, 'orb', i));
@@ -201,6 +240,8 @@
     const visitors = { singers: !['tide'].includes(w.genus), orrery: !['orrery', 'blackhole'].includes(w.genus), bowls: !['resonance'].includes(w.genus), storm: !['storm'].includes(w.genus) };
     const vlist = Object.keys(visitors).filter((v) => visitors[v]);
     w.visitor = opts.origin ? null : opts.visitor !== undefined ? opts.visitor : r() < 0.6 ? vlist[Math.floor(r() * vlist.length)] : null;
+    w.warmth = baseWarmth(w.genus, w.palette);
+    if (!w.species) w.species = makeSpecies(C.rng(C.hash(seed, 'species')), w.scale.length, nSp, w.warmth);
     const g = (w.gp = {});
     if (w.genus === 'mycelium') {
       g.sensorAngle = 0.25 + r() * 0.9;

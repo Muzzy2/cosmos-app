@@ -11,6 +11,7 @@
   const MAX_RIBBON_VERTS = 60000;
   const SERP_N = 40;
   const TAU = Math.PI * 2;
+  const HUNTER = C.hsl(0.0, 0.95, 0.5), WARM = C.hsl(0.08, 0.9, 0.55), COLD = C.hsl(0.6, 0.8, 0.5);
 
   // Chladni modes (n, m) per pitch class: each note draws its own figure in the dust.
   const CHL = [[2, 5], [3, 7], [1, 6], [4, 9], [3, 5], [2, 7], [5, 8], [1, 4], [3, 8], [2, 9], [4, 7], [5, 11]];
@@ -77,6 +78,15 @@
       this.meteors = [];
       this.flipT = 0;
       this.gain = 1; // this world's share of the soundscape (two worlds crossfade while you zoom between them)
+      // COSMOS 4: which selective pressures are on (experiments switch them off to measure drift), the
+      // world's climate right now, and whether singers may migrate through orbs
+      this.ctl = { climate: true, diet: true, mate: true, donor: false };
+      this.regen = 0.0034;
+      this.env = { warmth: 0.5, season: 0, word: 'mild' };
+      this.envT = 0;
+      this.migrate = true;
+      this.emigrants = []; // filled by _emigrate, collected by the multiverse
+      this.log = []; // what happened here: {t (wall ms), kind, text}
       this.drone = null;
       this.gpu = null;
       this.V = null;
@@ -114,6 +124,7 @@
       this.G = this.genus === 'tide' ? null : new C.GENUS_IMPL[this.genus](this);
       this.V = world.visitor === 'orrery' ? new C.GENUS_IMPL.orrery(this, true) : world.visitor === 'bowls' ? new C.GENUS_IMPL.resonance(this, true) : world.visitor === 'storm' ? new C.GENUS_IMPL.storm(this, true) : null;
       this.style = world.style || 0;
+      this.env = C.envOf(world, C.now ? C.now() : Date.now());
       this.singers = [];
       this.stars = [];
       this.serpents = [];
@@ -189,13 +200,14 @@
     // Spawn the founding species in a wave expanding from (cx, cy).
     populate(cx, cy, waveSpeed) {
       const r = C.rng(this.world.seed ^ 0x51ed);
-      for (const sp of this.world.species) {
+      for (const [k, sp] of this.world.species.entries()) {
+        const lin = C.lineageOf(this.world.seed, k);
         const a = r() * TAU, d = 3 + r() * 14;
         const hx = cx + Math.cos(a) * d, hy = cy + Math.sin(a) * d;
         for (let i = 0; i < sp.count; i++) {
           const x = wrap(hx + C.gauss(r) * 1.6), y = wrap(hy + C.gauss(r) * 1.6);
           const dist = Math.hypot(wrap(x - cx), wrap(y - cy));
-          this.spawnQueue.push({ t: this.time + 0.3 + dist / waveSpeed, x, y, g: this._mutate(this._genomeFrom(sp), r, 0.3) });
+          this.spawnQueue.push({ t: this.time + 0.3 + dist / waveSpeed, x, y, g: this._mutate(this._genomeFrom(sp), r, 0.3), lin });
         }
       }
     }
@@ -246,6 +258,13 @@
       this.palette = Object.assign({}, this.basePalette);
     }
 
+    // the season shows: a warm spell gilds the world, a cold one blues it (gently: at most ~8%)
+    _seasonTint() {
+      const b = this.basePalette;
+      if (!b) return;
+      const k = Math.min(0.08, Math.abs(this.env.season) * 0.65), tint = this.env.season > 0 ? WARM : COLD;
+      for (const key of ['deep', 'mid']) this.palette[key] = b[key].map((c, i) => c * (1 - k) + tint[i] * k * (key === 'deep' ? 0.08 : 1));
+    }
     _rootMidi() {
       return 48 + this.root;
     }
@@ -307,11 +326,12 @@
 
     // ------------------------------------------------------------------ genomes and creatures
     _genomeFrom(sp) {
-      return {
+      return C.fillGenome({
         degrees: sp.degrees ? sp.degrees.slice() : [sp.degree],
         timbre: sp.timbre, lobes: sp.lobes, rhythm: sp.rhythm, speed: sp.speed,
         social: sp.social, spike: sp.spike,
-      };
+        diet: sp.diet, climate: sp.climate, hardy: sp.hardy, wander: sp.wander, motif: sp.motif ? sp.motif.slice() : null,
+      }, this.env ? this.env.warmth : 0.5);
     }
     _mutate(g, r, rate) {
       r = r || Math.random;
@@ -330,12 +350,14 @@
       n.speed = C.clamp(n.speed * (1 + (r() - 0.5) * 0.2 * rate), 0.4, 2);
       n.social = C.clamp(n.social + (r() - 0.5) * 0.2 * rate, 0, 1);
       n.spike = C.clamp(n.spike + (r() - 0.5) * 0.2 * rate, 0, 1);
+      C.mutateTraits(n, r, rate);
       return n;
     }
 
     spawnSinger(x, y, g, opts) {
       if (this.singers.length >= MAX_SINGERS) return null;
       opts = opts || {};
+      g = C.fillGenome(g, this.env ? this.env.warmth : 0.5);
       const s = {
         id: this.nextId++, x: wrap(x), y: wrap(y), vx: opts.vx || 0, vy: opts.vy || 0,
         heading: Math.random() * TAU, g, energy: opts.energy || 1.0, age: 0,
@@ -343,6 +365,7 @@
         glow: 0, hover: 0, trail: new Float32Array(TR * 2), tN: 0, tTimer: 0,
         answerAt: 0, seek: 0, seekX: 0, seekY: 0, grabbed: false, thrown: 0, mateCd: 8 + Math.random() * 10,
         col: [1, 1, 1], size: 0.4, big: opts.big || 1,
+        sp: opts.sp || 0, gen: opts.gen || 0, home: opts.home != null ? opts.home : this.world.seed, lin: opts.lin || C.lineageOf(this.world.seed, 'x'), mstep: 0, huntCd: 2 + Math.random() * 3,
       };
       for (let i = 0; i < TR; i++) { s.trail[i * 2] = s.x; s.trail[i * 2 + 1] = s.y; }
       this._look(s);
@@ -358,6 +381,8 @@
       const pcol = C.hsl(C.pcHue(pc), 0.78, 0.55), wm = this.palette ? this.palette.mid : pcol;
       // a newcomer from another world keeps a little of its home's colour
       s.col = s.fcol ? pcol.map((c, i) => c * 0.6 + s.fcol[i] * 0.4) : pcol.map((c, i) => c * 0.8 + wm[i] * 0.2);
+      // hunters run hot: a reddish cast you can spot at a glance (their pitch colour still shows through)
+      if (s.g.diet > 0.5) { const k = 0.18 + 0.3 * (s.g.diet - 0.5); s.col = s.col.map((c, i) => c * (1 - k) + HUNTER[i] * k); }
       const len = this.scale.length;
       s.size = C.clamp(0.33 * Math.pow(2, -d0 / (len * 1.4)), 0.11, 0.7) * (1 + 0.22 * (s.g.degrees.length - 1)) * (s.big || 1);
     }
@@ -457,8 +482,10 @@
       const duck = this.music.active ? 0.55 : 1;
       const vel = 0.16 * sp.att * duck * (0.65 + 0.35 * Math.min(1.5, s.energy)) * (boost || 1);
       let t = null;
+      const step = C.motifDegree(s.g, s.mstep++);
       if (vel > 0.012) {
-        const notes = s.g.degrees.map((d) => this.midiOf(d));
+        // it sings its song: one step of its motif per pulse
+        const notes = s.g.degrees.map((d) => this.midiOf(d + step));
         t = this.audio.requestNote({ notes, timbre: s.g.timbre, vel, pan: sp.pan });
         if (t != null) this.lastPc = s.pcs[0];
       }
@@ -810,6 +837,8 @@
     // ------------------------------------------------------------------ simulation
     update(dt, realDt, ticks) {
       this.time += dt;
+      this.envT -= realDt;
+      if (this.envT <= 0) { this.envT = 2; this.env = C.envOf(this.world, C.now ? C.now() : Date.now()); this._seasonTint(); }
       const now = this.audio.now();
       const music = this.music;
       const mActive = music.active;
@@ -821,7 +850,7 @@
       if (this.spawnQueue.length) {
         this.spawnQueue = this.spawnQueue.filter((q) => {
           if (q.t > this.time) return true;
-          const s = this.spawnSinger(q.x, q.y, q.g);
+          const s = this.spawnSinger(q.x, q.y, q.g, { lin: q.lin });
           if (s) this.addRing(q.x, q.y, 0.05, s.size * 2.5, 1.0, s.col, 0.05, 0.7);
           return false;
         });
@@ -896,7 +925,7 @@
       // --- nutrient field: regrow, diffuse
       {
         const n = this.nut, base = this.nutBase, tmp = this._nutTmp;
-        const regen = 0.0045 * dt;
+        const regen = this.regen * dt; // light regrows slowly: it, not a hard cap, sets how many can live
         const D = Math.min(0.2, 0.6 * dt);
         for (let y = 0; y < NG; y++) {
           const ym = ((y - 1 + NG) % NG) * NG, yp = ((y + 1) % NG) * NG, yc = y * NG;
@@ -926,7 +955,7 @@
             const thrust = 1.1 * s.g.speed * (s.seek > 0 ? 1.4 : 1);
             s.vx += hx * thrust;
             s.vy += hy * thrust;
-            s.energy -= 0.012;
+            s.energy -= C.pulseCost(s.g);
             if (p.vis) {
               this.addShock(s.x, s.y, 0.45 * s.size * this.shockMul, 3.2, 0.35, 1.1, 0.25);
               this.addRing(s.x, s.y, s.size * 0.9, s.size * 2.6, 0.9, s.col, 0.04, 0.55);
@@ -980,7 +1009,7 @@
 
       // --- autonomous life: the universe does things on its own
       this.autoTimer -= dt;
-      if (this.autoTimer <= 0 && this.intro < 0.1 && !this.G) {
+      if (this.autoTimer <= 0 && this.intro < 0.1 && !this.G && this.ctl.auto !== false) {
         this.autoTimer = 35 + Math.random() * 45;
         this._autonomous();
       }
@@ -988,7 +1017,7 @@
       const alive = this.singers.length;
       if (this.G) this.G.update(dt, realDt, ticks, now);
       if (this.V) this.V.update(dt, realDt, ticks, now);
-      this._cosmicEvents(dt);
+      if (this.ctl.auto !== false) this._cosmicEvents(dt);
       if (!this.drone && this.audio.started) {
         this.drone = this.audio.createDrone();
         this.drone.setTimbre(this.genus);
@@ -998,7 +1027,7 @@
         this.drone.setGain(this.gain * (1 - this.intro));
         this.drone.setBright(C.clamp(this.singers.length / 140, 0, 1) * 0.6 + (music.active ? music.bands.mid * 0.4 : 0.15));
       }
-      if ((!this.G || this.world.visitor === 'singers') && alive < (this.G ? 6 : 14) && this.popFloorTimer <= 0 && this.intro < 0.1 && !this.spawnQueue.length) {
+      if (this.ctl.floor !== false && (!this.G || this.world.visitor === 'singers') && alive < (this.G ? 6 : 14) && this.popFloorTimer <= 0 && this.intro < 0.1 && !this.spawnQueue.length) {
         this.popFloorTimer = 2.5;
         this._spores(1 + Math.floor(Math.random() * 2));
       }
@@ -1048,9 +1077,11 @@
 
     // Two worlds bleed into each other: an orb swells and tears, and the creatures of the world inside it
     // pour out into this one, carrying their own notes (and their world's key bends this one for a while).
-    _rift(orb) {
+    // COSMOS 4: `migrants` are real creatures from the world inside (it was overcrowded); without them the
+    // rift pours out that world's founding kinds.
+    _rift(orb, migrants) {
       const inside = C.makeWorld(orb.seed, { notGenus: [this.genus], notStyle: [this.world.style] });
-      this.rift = { orb, t: 0, life: 22, n: 0, max: 10 + Math.floor(Math.random() * 8), species: inside.species, root: inside.root, scale: inside.scale, name: inside.name };
+      this.rift = { orb, t: 0, life: 22, n: 0, max: migrants ? migrants.length : 10 + Math.floor(Math.random() * 8), species: inside.species, root: inside.root, scale: inside.scale, name: inside.name, migrants: migrants || null };
       orb.rift = 1;
       this.audio.whoosh(1.6, true);
       const sp = this._audioSpatial(orb.x, orb.y);
@@ -1067,18 +1098,19 @@
       o.rift = Math.min(1, R.t / 2) * (1 - C.smooth(R.life - 3, R.life, R.t)) * R.allow;
       // creatures spill out over the first part of the rift, each one born of the other world's species
       if (R.t > 1.5 && R.n < R.max && Math.random() < dt * 1.6) {
-        const sp = R.species[Math.floor(Math.random() * R.species.length)];
-        const g = this._mutate(this._genomeFrom(sp), null, 0.6);
+        const m = R.migrants ? R.migrants[R.n] : null;
+        const g = m ? C.fillGenome(Object.assign({}, m.g, { degrees: m.g.degrees.slice(), motif: m.g.motif.slice() })) : this._mutate(this._genomeFrom(R.species[Math.floor(Math.random() * R.species.length)]), null, 0.6);
         // their notes are written in the other world's scale: retranslate into this world's degrees
         const midi = C.degreeToMidi(g.degrees[0], R.scale, R.root);
         let best = 0, bd = 1e9;
         for (let d = -this.scale.length * 2; d <= this.scale.length * 3; d++) { const e = Math.abs(this.midiOf(d) - midi); if (e < bd) { bd = e; best = d; } }
         g.degrees = [best];
         const a = Math.random() * TAU;
-        const s = this.spawnSinger(o.x + Math.cos(a) * o.r * 1.1, o.y + Math.sin(a) * o.r * 1.1, g, { vx: Math.cos(a) * 3, vy: Math.sin(a) * 3, energy: 1.6 });
+        const s = this.spawnSinger(o.x + Math.cos(a) * o.r * 1.1, o.y + Math.sin(a) * o.r * 1.1, g, { vx: Math.cos(a) * 3, vy: Math.sin(a) * 3, energy: 1.6, sp: m ? m.sp : 0, gen: m ? m.gen : 0, home: m ? m.home : o.seed, lin: m ? m.lin : C.lineageOf(o.seed, 'r') });
         if (s) {
           s.foreign = o.seed;
           s.fcol = o.c3;
+          if (m && m.hyb) s.hyb = true;
           this._look(s);
           R.n++;
           this.addRing(s.x, s.y, 0.05, 1.4, 0.9, o.c3, 0.05, 0.8 * C.flash.request(0.08));
@@ -1109,11 +1141,19 @@
 
     _spores(n) {
       const src = this.orbs.length ? this.orbs[Math.floor(Math.random() * this.orbs.length)] : { x: this.cam.x, y: this.cam.y, r: 1 };
-      const sp = this.world.species[Math.floor(Math.random() * this.world.species.length)];
-      const g0 = this._mutate(this._genomeFrom(sp), null, 1.5);
+      // seeds come from the living (so evolution is not undone by founders reappearing); only a world
+      // that has almost died out falls back on its founding species
+      const alive = this.singers.filter((x) => !x.dying && !x.leviathan);
+      let g0, lin;
+      if (alive.length >= 3) { const p = alive[Math.floor(Math.random() * alive.length)]; g0 = this._mutate(p.g, null, 1); lin = p.lin; }
+      else {
+        const k = Math.floor(Math.random() * this.world.species.length), sp = this.world.species[k];
+        g0 = this._mutate(this._genomeFrom(sp), null, 1.5);
+        lin = C.lineageOf(this.world.seed, k);
+      }
       for (let i = 0; i < n; i++) {
         const a = Math.random() * TAU;
-        const s = this.spawnSinger(src.x + Math.cos(a) * src.r * 1.2, src.y + Math.sin(a) * src.r * 1.2, this._mutate(g0, null, 0.3), { vx: Math.cos(a) * 2, vy: Math.sin(a) * 2 });
+        const s = this.spawnSinger(src.x + Math.cos(a) * src.r * 1.2, src.y + Math.sin(a) * src.r * 1.2, this._mutate(g0, null, 0.3), { vx: Math.cos(a) * 2, vy: Math.sin(a) * 2, lin });
         if (s) this.addRing(s.x, s.y, 0.05, 1.2, 0.8, s.col, 0.05, 0.7);
       }
     }
@@ -1137,6 +1177,7 @@
       const music = this.music, mActive = music.active;
       const cur = this.cursor;
       const beat = this.audio.beatDur();
+      const ctl = this.ctl, warmth = this.env.warmth;
       const cap = 140;
       const births = [];
       const len = this.scale.length;
@@ -1153,6 +1194,7 @@
         s.glow *= Math.exp(-dt * 1.5);
         s.hover += ((s.hoverT || 0) - s.hover) * C.damp(10, dt);
         s.mateCd -= dt;
+        s.huntCd -= dt;
         s.thrown = Math.max(0, s.thrown - dt);
         s.seek = Math.max(0, s.seek - dt);
 
@@ -1189,6 +1231,21 @@
             const w = cons * s.g.social;
             fx += dx * w * 0.25;
             fy += dy * w * 0.25;
+            // predators and prey: a hunter stalks smaller singers that don't share its song; they flee
+            if (ctl.diet) {
+              const sh = C.isHunter(s.g), oh = C.isHunter(o.g);
+              if (sh && !oh && o.size < s.size * 1.5) {
+                fx += (dx / r) * 1.6 * s.g.diet;
+                fy += (dy / r) * 1.6 * s.g.diet;
+                if (s.huntCd <= 0 && r < (s.size + o.size) * 1.1 && !o.grabbed && C.motifSim(s.g.motif, o.g.motif) < 0.8) {
+                  if (Math.random() < C.strikeOdds(s.g, o.g)) { this._devour(s, o); s.huntCd = 5; }
+                  else { s.huntCd = 1.6; o.vx -= (dx / r) * 4; o.vy -= (dy / r) * 4; o.glow = 1.2; }
+                }
+              } else if (oh && !sh && s.size < o.size * 1.5 && r < 2.2) {
+                fx -= (dx / r) * 2.2 * (1 - r / 2.2);
+                fy -= (dy / r) * 2.2 * (1 - r / 2.2);
+              }
+            }
             if (cons > 0.3) { ax += o.vx; ay += o.vy; an++; }
             // firefly sync: matching rhythms pull each other's phase together
             if (o.g.rhythm === s.g.rhythm) {
@@ -1200,7 +1257,7 @@
             // thrown into another: fusion into a chord
             if (s.thrown > 0 && r < (s.size + o.size) * 0.9 && s.g.degrees.length + o.g.degrees.length <= 3 && !o.grabbed) {
               this._fuse(s, o);
-            } else if (!s.thrown && s.mateCd <= 0 && o.mateCd <= 0 && s.energy > 1.55 && o.energy > 1.55 && cons > 0.45 && r < (s.size + o.size) * 1.2 && S.length + births.length < cap) {
+            } else if (!s.thrown && s.mateCd <= 0 && o.mateCd <= 0 && s.energy > 1.55 && o.energy > 1.55 && cons > 0.45 && r < (s.size + o.size) * 1.2 && S.length + births.length < cap && (!ctl.mate || C.motifSim(s.g.motif, o.g.motif) > 0.62) && C.isHunter(s.g) === C.isHunter(o.g)) {
               births.push([s, o]);
               s.mateCd = o.mateCd = 18 + Math.random() * 14;
               s.energy -= 0.55;
@@ -1263,10 +1320,13 @@
         for (const o of this.orbs) {
           const dx = wrap(o.x - s.x), dy = wrap(o.y - s.y), r = Math.hypot(dx, dy) + 1e-3;
           if (r < o.r + s.size + 0.3) {
+            // a wanderer touching an orb may slip through into the world inside it
+            if (this.migrate && !o.dying && !o.grabbed && o.born >= 1 && s.age > 8 && Math.random() < s.g.wander * s.g.wander * 0.6 * dt) { this._emigrate(s, o); break; }
             fx -= (dx / r) * 5;
             fy -= (dy / r) * 5;
           }
         }
+        if (s.dead) continue;
 
         // steer the bell toward where it wants to go
         const desired = Math.atan2(fy, fx);
@@ -1286,15 +1346,29 @@
         s.y = wrap(s.y + s.vy * dt);
 
         // metabolism: eat light, and your music if it carries my note
-        const food = this._eat(s.x, s.y, 0.22 * s.size * dt);
-        s.energy += food * 2.4;
+        const food = this._eat(s.x, s.y, 0.22 * s.size * dt * (ctl.diet ? C.grazeEff(s.g) : 1));
+        s.energy += food * 1.6;
+        // COSMOS 4: in another medium they graze on it too (the mould's veins, living skin, the cells of
+        // Life and Lenia); where the medium is alive, their grazing eats it away
+        if (this.G && this.G.foodAt) {
+          const f = this.G.foodAt(s.x, s.y);
+          if (f > 0.01) {
+            const take = f * 0.25 * s.size * dt * (ctl.diet ? C.grazeEff(s.g) : 1);
+            s.energy += take * 1.6;
+            if (this.G.graze) this.G.graze(s.x, s.y, take);
+          }
+        }
+        s.energy += C.climateCost(s.g, warmth, ctl.climate) * dt;
         if (mActive) {
+          // your song feeds the singers whose own songs share its notes, so over generations their songs
+          // drift toward your music
           let c = 0;
           for (const pc of s.pcs) c = Math.max(c, music.chroma[pc]);
+          for (let k = 1; k < 4; k++) c = Math.max(c, music.chroma[this.pcOf(s.g.degrees[0] + C.motifDegree(s.g, k))] * 0.8);
           s.energy += c * c * music.level * 0.09 * dt;
           s.glow = Math.max(s.glow, c * c * music.level * 0.8);
         }
-        s.energy -= dt * (0.018 + 0.028 * s.size);
+        s.energy -= dt * (0.026 + 0.04 * s.size);
         if (s.energy <= 0 || s.age > s.life) this._killSinger(s);
         else if (s.energy > 2.7 && S.length + births.length < cap && s.age > 12) {
           births.push([s, null]);
@@ -1318,11 +1392,17 @@
         let g;
         if (b) {
           g = { degrees: (Math.random() < 0.5 ? a : b).g.degrees.slice() };
-          for (const k of ['timbre', 'lobes', 'rhythm', 'speed', 'social', 'spike']) g[k] = (Math.random() < 0.5 ? a : b).g[k];
+          for (const k of C.GENE_KEYS) g[k] = (Math.random() < 0.5 ? a : b).g[k];
+          g.motif = (Math.random() < 0.5 ? a : b).g.motif.slice();
           g = this._mutate(g, null, 1);
         } else g = this._mutate(a.g, null, 1);
         const mx = b ? a.x + wrap(b.x - a.x) / 2 : a.x, my = b ? a.y + wrap(b.y - a.y) / 2 : a.y;
-        const c = this.spawnSinger(mx, my, g, { energy: 1.0, vx: a.vx, vy: a.vy });
+        // heredity control for experiments: the newborn takes a random survivor's genes instead of its parents'
+        if (ctl.donor) { const pool = S.filter((x) => !x.dying && !x.dead && x !== a && x !== b); if (pool.length) g = this._mutate(pool[Math.floor(Math.random() * pool.length)].g, null, 1); }
+        const c = this.spawnSinger(mx, my, g, { energy: 1.0, vx: a.vx, vy: a.vy, sp: a.sp, gen: Math.max(a.gen, b ? b.gen : 0) + 1, home: a.home, lin: a.lin });
+        if (c && a.fcol && (!b || b.fcol)) { c.fcol = a.fcol; c.foreign = a.foreign; this._look(c); }
+        // a child of a newcomer and a native (or of such a child) is a hybrid
+        if (c && (b ? (!!a.foreign !== !!b.foreign || a.hyb || b.hyb) : a.hyb)) c.hyb = true;
         if (c) {
           const sp = this._audioSpatial(mx, my);
           if (sp.visible) {
@@ -1336,6 +1416,57 @@
       // clear out the dead
       for (const s of S) if (s.dying >= 1) s.dead = true;
       if (S.some((s) => s.dead)) this.singers = S.filter((s) => !s.dead);
+    }
+
+    // A hunter catches its prey: it eats most of what the prey had stored.
+    _devour(h, p) {
+      h.energy += Math.min(1.6, p.energy * 0.7 + 0.4 * p.size);
+      h.glow = 1.4;
+      h.pulse = Math.max(h.pulse, 0.6);
+      p.eaten = true;
+      this.stats.kills = (this.stats.kills || 0) + 1;
+      const sp = this._audioSpatial(p.x, p.y);
+      if (sp.visible) {
+        this.addRing(p.x, p.y, p.size * 2, 0.05, 0.6, h.col, 0.05, 0.7);
+        this.audio.requestNote({ notes: [this.midiOf(h.g.degrees[0]) - 12], timbre: 0.9, vel: 0.1 * sp.att, pan: sp.pan });
+      }
+      this._killSinger(p, true);
+      this._found('hunt', 'one of them is hunting the others');
+    }
+    // A wanderer slips into an orb: it leaves this world and arrives in the one inside (main.js and the
+    // multiverse deliver it, live or into that world's saved memory).
+    _emigrate(s, o) {
+      this.emigrants.push({ to: o.seed, g: s.g, energy: s.energy, sp: s.sp, gen: s.gen, home: s.home, lin: s.lin, fcol: s.fcol || null, foreign: s.foreign || null, from: this.world.seed, fromCol: this.palette.hot });
+      this.stats.emigrated = (this.stats.emigrated || 0) + 1;
+      s.dying = 0.6; // fades into the membrane
+      s.vx = s.vy = 0;
+      const sp = this._audioSpatial(o.x, o.y);
+      if (sp.visible) {
+        this.addRing(o.x, o.y, o.r * 1.3, o.r * 0.9, 0.8, s.col, 0.04, 0.8);
+        this.audio.requestNote({ notes: [this.midiOf(s.g.degrees[0]) + 12], timbre: 0.1, vel: 0.08 * sp.att, pan: sp.pan });
+      }
+      this._found('migrate', 'a creature slipped into another world');
+    }
+    // Newcomers from another world arrive at a point (from an orb above, or poured out of a rift).
+    immigrate(list, x, y, col) {
+      let n = 0;
+      for (const m of list) {
+        const a = Math.random() * TAU, d = 0.5 + Math.random() * 1.5;
+        const s = this.spawnSinger(x + Math.cos(a) * d, y + Math.sin(a) * d, m.g, { energy: Math.max(1, m.energy || 1.2), vx: Math.cos(a) * 2, vy: Math.sin(a) * 2, sp: m.sp, gen: m.gen, home: m.home, lin: m.lin });
+        if (!s) break;
+        s.foreign = m.from;
+        s.fcol = m.fromCol || col || null;
+        if (m.hyb) s.hyb = true;
+        this._look(s);
+        n++;
+        const sp = this._audioSpatial(s.x, s.y);
+        if (sp.visible && n <= 4) {
+          this.addRing(s.x, s.y, 0.05, 1.6, 1.0, s.col, 0.05, 0.8 * C.flash.request(0.06));
+          this.audio.requestNote({ notes: [this.midiOf(s.g.degrees[0]) + 12], timbre: 0.1, vel: 0.08 * sp.att, pan: sp.pan });
+        }
+      }
+      if (n && this.gain > 0.71) this._found('arrive', 'a creature from another world has arrived');
+      return n;
     }
 
     _fuse(a, b) {
@@ -1469,7 +1600,18 @@
 
     _updateOrbs(dt, realDt) {
       const cur = this.cursor, cam = this.cam;
+      // COSMOS 4: orbs breathe light into this world, more when the world inside is full of life, so
+      // creatures gather at the doors of busy worlds (and wander through them more often)
+      this.leakT = (this.leakT || 0) - dt;
+      const leak = this.leakT <= 0 && C.multiverse && this.ctl.leak !== false;
+      if (leak) this.leakT = 1;
       for (const o of this.orbs) {
+        if (leak && !o.dying) {
+          const w = C.multiverse.index.worlds[o.seed];
+          const life = w && w.pop ? Math.min(1, w.pop / 100) : 0;
+          o.life = life;
+          this._addNut(o.x, o.y, 0.01 + 0.03 * life, o.r * 1.4);
+        }
         o.hover += ((o.hoverT || 0) - o.hover) * C.damp(8, realDt);
         if (o.dying) o.born -= realDt * 0.7;
         else o.born = Math.min(1, o.born + realDt * 0.5);
