@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#03030a">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-title" content="COSMOS">
+<meta name="description" content="A universe that sings itself: an infinite, living, musical cosmos you can play.">
+<title>COSMOS</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="intro">
+  <div class="title">COSMOS</div>
+  <div class="sub">a universe that sings itself</div>
+  <div class="enter">touch anywhere to wake it</div>
+  <div class="note">headphones recommended · sound fades in gently</div>
+</div>
+
+<div id="hud" class="ui">
+  <div id="worldName"></div>
+  <div id="worldMeta"></div>
+  <div id="chord" title="who is singing: one dot per pitch, sized by population"></div>
+</div>
+
+<div id="hint"></div>
+<div id="pads" class="ui" aria-label="notes"></div>
+<div id="toast"></div>
+<div id="paused">paused · press P to resume</div>
+<div id="drop"><div>let it hear this song</div></div>
+<div id="err"></div>
+
+<div id="toolbar" class="ui">
+  <button id="bPause" title="Pause (P)"><svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg></button>
+  <button id="bDraw" title="Draw mode: drag draws living melodies (right-drag always draws)"><svg viewBox="0 0 24 24"><path d="M4 18c3-6 6 2 9-4s4-6 7-8"/></svg></button>
+  <button id="bMusic" title="Let it listen to your music"><svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg></button>
+  <button id="bSettings" title="Comfort &amp; settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
+  <button id="bHelp" title="How to touch it"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5V14M12 17.2v.1"/></svg></button>
+  <button id="bFull" title="Fullscreen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
+</div>
+
+<div id="pMusic" class="panel ui">
+  <h3>Let it listen</h3>
+  <p class="dim">Your music becomes the weather: bass bends gravity, beats ripple the dust, the universe retunes to your song's key and locks to its tempo, and creatures who share its notes are fed.</p>
+  <button class="wide" id="mFile">Play a song file…</button>
+  <button class="wide" id="mTab">Listen to a browser tab…</button>
+  <p class="tiny">Pick the tab and tick “Share tab audio”. DRM-protected players may share silence.</p>
+  <button class="wide" id="mMic">Listen through the microphone</button>
+  <p class="tiny">For Spotify/desktop apps: play through speakers and let the mic hear it. Browsers cannot capture system audio directly.</p>
+  <div id="mStatus" class="dim"></div>
+  <canvas id="mSpec" width="240" height="34"></canvas>
+  <div class="row"><button id="mPlay">pause / play</button><button id="mStop">stop listening</button></div>
+  <input type="file" id="file" accept="audio/*" hidden>
+</div>
+
+<div id="pSettings" class="panel ui">
+  <h3>Comfort</h3>
+  <label>Volume <input type="range" id="sVol" min="0" max="1" step="0.01"></label>
+  <label>Song volume <input type="range" id="sMusicVol" min="0" max="1" step="0.01"></label>
+  <label>Intensity <input type="range" id="sInt" min="0" max="1" step="0.01"></label>
+  <label>Trails <input type="range" id="sTrail" min="0" max="1" step="0.01"></label>
+  <label>Detail <select id="sQual"><option value="phone">phone (65k dust, sharper)</option><option value="low">gentle (65k dust)</option><option value="high">rich (262k dust)</option><option value="ultra">ultra (1M dust)</option></select></label>
+  <label class="chk"><input type="checkbox" id="sGuard"> Strong flash guard</label>
+  <label class="chk"><input type="checkbox" id="sReduced"> Reduced motion</label>
+  <label class="chk"><input type="checkbox" id="sSynth"> Creature sounds</label>
+  <label class="chk"><input type="checkbox" id="sHints"> Gentle hints</label>
+  <label class="chk"><input type="checkbox" id="sHaptics"> Haptics (phone taps you feel)</label>
+  <button class="wide" id="bInstall" hidden>Install COSMOS as an app</button>
+  <div id="installHow" class="tiny"></div>
+  <div id="sStats" class="tiny"></div>
+</div>
+
+<div id="pHelp" class="panel ui">
+  <h3>Touching it</h3>
+  <table>
+    <tr><td>move</td><td>your light; creatures notice you (rush at them and they scatter)</td></tr>
+    <tr><td>tap</td><td>a ripple and a note (higher on screen = higher note)</td></tr>
+    <tr><td>press &amp; hold</td><td>gather light; let go early for a burst, hold longer for a pulsar</td></tr>
+    <tr><td>drag</td><td>stir the tide</td></tr>
+    <tr><td>grab a creature</td><td>carry it, fling it</td></tr>
+    <tr><td>right-drag</td><td>draw a melody that comes alive (or use the pen button)</td></tr>
+    <tr><td>A–L · Q–O · Z–M</td><td>sing notes in this world's scale; listen for an answer</td></tr>
+    <tr><td>scroll</td><td>zoom, forever: keep zooming in on anything and the world inside it opens around you; keep zooming out and you rise into the world around this one</td></tr>
+    <tr><td>double-click · Enter · Esc</td><td>glide into the thing under your cursor · glide in at the centre · glide out</td></tr>
+    <tr><td>double-click a creature</td><td>follow it</td></tr>
+    <tr><td>space (hold)</td><td>slow time</td></tr>
+    <tr><td>P · Tab</td><td>pause · hide interface</td></tr>
+    <tr><td>on a phone</td><td>one finger = mouse · pinch = zoom forever · double-tap = glide in · two-finger tap = glide out · pads = notes · tilt the phone and the cosmos flows · shake it</td></tr>
+  </table>
+  <p class="dim">Every world is a different kind of universe, and your hands mean different things in each: the card that appears when you arrive tells you how to touch it. The table above is for the first world. Some things are not written anywhere.</p>
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/device.js"></script>
+<script src="js/world.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/music.js"></script>
+<script src="js/gl.js"></script>
+<script src="js/shaders.js"></script>
+<script src="js/render.js"></script>
+<script src="js/life.js"></script>
+<script src="js/genera.js"></script>
+<script src="js/media.js"></script>
+<script src="js/media2.js"></script>
+<script src="js/media3.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
