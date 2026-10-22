@@ -444,7 +444,8 @@
     julia:     { notes: ['glassharp', 'celesta', 'glass'],  pad: 'glassharp', bass: 'bass',      arp: 'celesta', lead: 'glass',    groove: null, maxE: 0.55, ext: 'add9', trim: 1.32 },
     tunnel:    { notes: ['pluck', 'epiano', 'chip'],        pad: 'pad',       bass: 'pluckbass', arp: 'pluck',   lead: 'brass',    groove: 'drive', maxE: 1, minE: 0.58, bassGain: 2.2, drumGain: 1.8, trim: 1.01 },
     cathedral: { notes: ['organ', 'choir', 'glass'],        pad: 'organ',     bass: 'bass',      arp: 'celesta', lead: 'choir',    groove: null, maxE: 0.6, bassGain: 0.6, trim: 1.24 },
-    life:      { notes: ['chip', 'marimba', 'celesta'],     pad: 'organ',     bass: 'pluckbass', arp: 'chip',    lead: 'chip',     groove: 'chip', maxE: 0.9, minE: 0.4, bassGain: 1.5, drumGain: 1.3, trim: 1.27 },
+    life:      { notes: ['chip', 'marimba', 'celesta'],     pad: 'organ',     bass: 'pluckbass', arp: 'chip',    lead: 'chip',     groove: 'chip', maxE: 0.9, minE: 0.4, bassGain: 1.5, drumGain: 1.3, trim: 1.45 },
+    lenia:     { notes: ['glassharp', 'marimba', 'choir'],  pad: 'choir',     bass: 'bass',      arp: 'glass',   lead: 'flute',    groove: 'soft', maxE: 0.6, ext: 'add9', trim: 1.15 },
     storm:     { notes: ['strings', 'brass', 'fmbell'],     pad: 'strings',   bass: 'bass',      arp: 'glass',   lead: 'brass',    groove: 'toms', maxE: 0.9, minE: 0.35, bassGain: 1.4, drumGain: 1.4, trim: 0.71 },
   };
   C.familyOf = (genus) => C.FAMILIES[genus] || C.FAMILIES.tide;

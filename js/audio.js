@@ -267,6 +267,10 @@
       this.duck = d;
       this._applyBus();
     }
+    // the score makes no voices while it can't be heard (your song is playing, or sounds are off)
+    scoreMuted() {
+      return !this.synthOn || this.duck < 1 || this.scoreVolume <= 0.001;
+    }
     _applyBus() {
       if (!this.ctx) return;
       const g = this.synthOn ? this.duck : 0;
@@ -358,12 +362,14 @@
       // the world's band decides what a creature sounds like; its timbre picks soft, middle or edgy
       const fam = C.familyOf(spec.fam || this.defaultFam);
       const instName = C.INSTR[spec.voice] ? spec.voice : fam.notes[timbre < 0.33 ? 0 : timbre < 0.66 ? 1 : 2];
-      const inst = C.INSTR[instName];
+      // your own sound pack, if you loaded one, sings for the creatures instead of the world's band
+      const pack = this.userPack && !spec.voice && !spec.freq ? this.userPack : null;
+      const inst = pack ? (e, t0, f, v, d, dest) => pack.voice(e, t0, f, v, d, dest) : C.INSTR[instName];
       const chord = this.composer && this.composer.chordPcs;
       let end = t;
       for (const m of notes) {
         // bell-like voices sound an octave above the written note, as a celesta does
-        const f = spec.freq || C.midiToFreq(m + (OCTAVE_UP[instName] ? 12 : 0));
+        const f = spec.freq || C.midiToFreq(m + (OCTAVE_UP[instName] && !pack ? 12 : 0));
         // notes outside the score's current chord still sound, but as quieter passing colour
         const pc = ((Math.round(m) % 12) + 12) % 12;
         const v = chord && !spec.freq && !chord.has(pc) ? vel * 0.6 : vel;

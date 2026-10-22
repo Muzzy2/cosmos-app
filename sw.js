@@ -1,9 +1,9 @@
 // COSMOS service worker: network first (updates show on the next launch), cache as the offline fallback.
-const CACHE = 'cosmos-v4';
+const CACHE = 'cosmos-v7';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
-  'js/util.js', 'js/device.js', 'js/world.js', 'js/audio.js', 'js/instruments.js', 'js/score.js', 'js/music.js', 'js/gl.js', 'js/shaders.js',
-  'js/render.js', 'js/life.js', 'js/genera.js', 'js/media.js', 'js/media2.js', 'js/media3.js', 'js/main.js',
+  'js/util.js', 'js/store.js', 'js/device.js', 'js/world.js', 'js/audio.js', 'js/instruments.js', 'js/score.js', 'js/music.js', 'js/playlist.js', 'js/gl.js', 'js/shaders.js',
+  'js/render.js', 'js/life.js', 'js/genera.js', 'js/media.js', 'js/media2.js', 'js/media3.js', 'js/media4.js', 'js/main.js',
 ];
 
 self.addEventListener('install', (e) => {
@@ -13,7 +13,8 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // only COSMOS's own old caches: other apps can share this origin (e.g. github.io)
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('cosmos-') && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -27,8 +28,10 @@ self.addEventListener('fetch', (e) => {
         if (res.ok && res.type === 'basic') {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(req, copy));
+          return res;
         }
-        return res;
+        // a server error (or a missing file during a broken deploy) falls back to the copy we have
+        return caches.match(req, { ignoreSearch: true }).then((r) => r || res);
       })
       .catch(() => caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match('index.html')))
   );

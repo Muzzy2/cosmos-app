@@ -159,6 +159,7 @@
     audio.setSynthOn(settings.synth);
     composer = audio.composer = new C.Composer(audio);
     composer.setWorld(uni);
+    pack.load().then(packStatus);
     if (TOUCH) enableMotion();
     uni.introTarget = 0;
     uni.bangFrame = true;
@@ -585,20 +586,23 @@
   // ------------------------------------------------------------------ drag & drop songs
   addEventListener('dragover', (e) => { e.preventDefault(); body.classList.add('dragging'); });
   addEventListener('dragleave', (e) => { if (e.relatedTarget == null) body.classList.remove('dragging'); });
-  addEventListener('drop', (e) => {
+  addEventListener('drop', async (e) => {
     e.preventDefault();
     body.classList.remove('dragging');
-    const f = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('audio') || /\.(mp3|wav|ogg|flac|m4a|aac|opus|webm)$/i.test(f.name));
-    if (f) playFile(f);
+    const files = await C.filesFromDrop(e.dataTransfer);
+    if (files.length) addSongs(files);
   });
-  async function playFile(f) {
+  // songs join the playlist (kept on this device) and the first one starts
+  const playlist = new C.Playlist(music, {
+    wake: () => { if (state === 'intro') wake(); },
+    toast: (a, b) => showToast(a, b),
+    world: () => cur.world.name,
+  });
+  const pack = new C.SoundPack(audio);
+  async function addSongs(files) {
     if (state === 'intro') wake();
-    try {
-      await music.useFile(f);
-      showToast('listening', f.name.replace(/\.[^.]+$/, ''));
-    } catch (err) {
-      showToast('could not play that file', String(err.message || err));
-    }
+    const n = await playlist.add(files);
+    if (n > 1) showToast(n + ' songs in your playlist', 'kept on this device · ⏭ or the lock screen skips');
   }
 
   // ------------------------------------------------------------------ interface
@@ -625,7 +629,25 @@
   $('bHelp').onclick = () => togglePanel('pHelp');
   $('bFull').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); };
   $('mFile').onclick = () => $('file').click();
-  $('file').onchange = (e) => { const f = e.target.files[0]; if (f) playFile(f); e.target.value = ''; };
+  $('file').onchange = (e) => { const fs = [...e.target.files]; if (fs.length) addSongs(fs); e.target.value = ''; };
+  $('mFolder').onclick = () => $('folder').click();
+  $('folder').onchange = (e) => { const fs = [...e.target.files].filter(C.isAudioFile).sort((a, b) => (a.webkitRelativePath || a.name).localeCompare(b.webkitRelativePath || b.name)); if (fs.length) addSongs(fs); else showToast('no songs in that folder'); e.target.value = ''; };
+  $('pPrev').onclick = () => playlist.prev();
+  $('pNext').onclick = () => playlist.next();
+  $('pPlay').onclick = () => playlist.toggle();
+  $('pShuffle').onclick = () => playlist.setShuffle(!playlist.shuffle);
+  const packStatus = () => { $('packStatus').textContent = pack.items.length ? pack.items.length + ' sound' + (pack.items.length > 1 ? 's' : '') + ': ' + pack.items.map((x) => x.name + ' (' + C.NOTE_NAMES[x.root % 12] + (Math.floor(x.root / 12) - 1) + ')').join(', ') : 'No sounds of yours yet.'; $('sPack').checked = pack.on; };
+  $('mPack').onclick = () => $('packFile').click();
+  $('packFile').onchange = async (e) => {
+    const fs = [...e.target.files];
+    e.target.value = '';
+    if (state === 'intro') wake();
+    const n = await pack.add(fs);
+    showToast(n ? 'the creatures have your voice now' : 'those files could not be used', n ? n + ' sound' + (n > 1 ? 's' : '') + ' kept on this device' : 'try short wav or mp3 samples');
+    packStatus();
+  };
+  $('sPack').onchange = (e) => { pack.setOn(e.target.checked); packStatus(); };
+  $('mPackClear').onclick = () => { pack.clear(); packStatus(); };
   $('mTab').onclick = async () => {
     if (state === 'intro') wake();
     try { await music.useTab(); showToast('listening', 'to the tab you shared'); }
@@ -636,8 +658,8 @@
     try { await music.useMic(); showToast('listening', 'through the microphone'); }
     catch (err) { showToast('microphone unavailable', String(err.message || err)); }
   };
-  $('mPlay').onclick = () => music.togglePlay();
-  $('mStop').onclick = () => { music.stop(); musicKey = null; };
+  $('mPlay').onclick = () => { if (music.kind === 'file' || !music.active) playlist.toggle(); else music.togglePlay(); };
+  $('mStop').onclick = () => { music.stop(); musicKey = null; playlist.render(); };
   music.onKey = (k) => {
     musicKey = k;
     let fit = null;
@@ -652,8 +674,9 @@
   sMusicVol.oninput = () => { settings.musicVolume = +sMusicVol.value; audio.setMusicVolume(settings.musicVolume); saveSettings(); };
   sInt.oninput = () => { settings.intensity = +sInt.value; saveSettings(); };
   sTrail.oninput = () => { settings.trails = +sTrail.value; saveSettings(); };
-  sQual.onchange = () => {
-    settings.quality = sQual.value; saveSettings();
+  sQual.onchange = () => { settings.autoDetail = false; setQuality(sQual.value); };
+  function setQuality(q) {
+    settings.quality = q; sQual.value = q; saveSettings();
     // rebuild every live world at the new detail
     for (const L of [outer, cur, inner]) {
       if (!L) continue;
@@ -665,7 +688,26 @@
       L.prevCam = null;
     }
     resize();
-  };
+  }
+  // Frame budget: if it can't keep up for several seconds, step the detail down one notch (never up on
+  // its own, and never while a membrane is opening, when a third world briefly warms up). Choosing a
+  // detail yourself turns this off.
+  const LADDER = ['ultra', 'high', 'phone', 'low'];
+  let slowFor = 0, budgetQuiet = 8;
+  function frameBudget(realDt) {
+    if (settings.autoDetail === false || state !== 'live' || paused || document.hidden || /[?&]drive/.test(location.search)) return;
+    budgetQuiet -= realDt;
+    if (inner && weightOf(cam.viewH * inner.link.S) > 0) budgetQuiet = Math.max(budgetQuiet, 2);
+    if (budgetQuiet > 0) { slowFor = 0; return; }
+    slowFor = fps < 42 ? slowFor + realDt : Math.max(0, slowFor - realDt * 2);
+    if (slowFor < 5) return;
+    slowFor = 0;
+    budgetQuiet = 20;
+    const i = LADDER.indexOf(settings.quality);
+    if (i < 0 || i === LADDER.length - 1) return;
+    setQuality(LADDER[i + 1]);
+    showToast('lighter detail, to keep it smooth', 'change it in ⚙ any time');
+  }
   $('sGuard').onchange = (e) => { settings.strongGuard = e.target.checked; saveSettings(); };
   $('sReduced').onchange = (e) => { settings.reduced = e.target.checked; saveSettings(); };
   $('sSynth').onchange = (e) => { settings.synth = e.target.checked; audio.setSynthOn(settings.synth); saveSettings(); };
@@ -773,6 +815,7 @@
       el.style.color = col;
       el.style.opacity = census[pc] ? 0.9 : 0.15;
     }
+    playlist.tick();
     if ($('pMusic').classList.contains('open')) {
       let st = 'Not listening.';
       if (music.active) {
@@ -937,6 +980,7 @@
 
     updateCamera(realDt);
     updateStack(realDt);
+    frameBudget(realDt);
     uni = cur.uni;
 
     // which two worlds are on screen, and how far through the membrane are we?
@@ -1024,12 +1068,13 @@
     auto = { dir: -1 };
   };
   C.app = {
-    get uni() { return cur.uni; }, audio, music, renderer, cam, settings, wake, visitGenus,
+    get uni() { return cur.uni; }, audio, music, renderer, cam, settings, wake, visitGenus, playlist, pack,
     get state() { return state; }, get layers() { return { outer: outer && outer.world.name, cur: cur.world.name, inner: inner && inner.world.name }; },
     zoomIn: () => { ensureInner(); auto = { dir: -1 }; }, zoomOut: () => { auto = { dir: 1 }; },
   };
   // Test hook: record what you'd hear for `sec` seconds and save it as a WAV (needs `node serve.js --dev`).
-  C.recordWav = (sec, name) => new Promise((resolve, reject) => {
+  // Only on a local server: the published app has no reason to send audio anywhere.
+  if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) C.recordWav = (sec, name) => new Promise((resolve, reject) => {
     if (!audio.ctx) return reject(new Error('not awake'));
     const ctx = audio.ctx, sp = ctx.createScriptProcessor(4096, 2, 2), L = [], R = [];
     let n = 0;

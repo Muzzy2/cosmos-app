@@ -67,8 +67,15 @@
     }
 
     stop() {
-      if (this.el) { this.el.pause(); this.el.src = ''; this.el = null; }
-      if (this.srcNode) { try { this.srcNode.disconnect(); } catch (e) {} this.srcNode = null; }
+      if (this.el) {
+        this.el.onended = null;
+        this.el.pause();
+        if (this._url) { URL.revokeObjectURL(this._url); this._url = null; }
+        this.el.removeAttribute('src');
+        this.el = null;
+      }
+      if (this.srcNode && this.srcNode !== this._playerNode) { try { this.srcNode.disconnect(); } catch (e) {} }
+      this.srcNode = null;
       this._split = null;
       this.aL = this.aR = null;
       if (this.stream) { this.stream.getTracks().forEach((t) => t.stop()); this.stream = null; }
@@ -99,22 +106,37 @@
       this.audio.setDuck(0.42);
     }
 
-    async useFile(file) {
+    // A song file (or a song kept on the device). One audio element is reused for every song, so its
+    // Web Audio source is made once (an element can only ever have one) and a playlist moves on cleanly.
+    async useFile(file, label) {
       this.stop();
       this._ensureAnalyser();
       const ctx = this.audio.ctx;
-      const el = new Audio();
-      el.src = URL.createObjectURL(file);
-      el.loop = false;
-      el.crossOrigin = 'anonymous';
+      if (!this._player) {
+        const el = new Audio();
+        el.loop = false;
+        el.preload = 'auto';
+        el.setAttribute('playsinline', '');
+        this._player = el;
+        this._playerNode = ctx.createMediaElementSource(el);
+        this._playerNode.connect(this.analyser);
+        this._playerNode.connect(this.audio.musicBus);
+        this._stereoTap(this._playerNode);
+        this._playerSplit = this._split;
+        this._playerL = this.aL;
+        this._playerR = this.aR;
+      }
+      const el = this._player;
+      this._url = URL.createObjectURL(file);
+      el.src = this._url;
       this.el = el;
-      this.srcNode = ctx.createMediaElementSource(el);
-      this.srcNode.connect(this.analyser);
-      this.srcNode.connect(this.audio.musicBus);
-      this._stereoTap(this.srcNode);
-      el.onended = () => { if (this.onEnd) this.onEnd(); this.stop(); };
+      this.srcNode = this._playerNode;
+      this._split = this._playerSplit;
+      this.aL = this._playerL;
+      this.aR = this._playerR;
+      el.onended = () => { const cb = this.onEnd; this.stop(); if (cb) cb('ended'); };
       await el.play();
-      this._reset('file', file.name.replace(/\.[^.]+$/, ''));
+      this._reset('file', label || (file.name || 'a song').replace(/\.[^.]+$/, ''));
     }
 
     async useTab() {
@@ -184,7 +206,7 @@
 
     togglePlay() {
       if (!this.el) return;
-      if (this.el.paused) this.el.play(); else this.el.pause();
+      if (this.el.paused) this.el.play().catch(() => {}); else this.el.pause();
     }
 
     update(dt) {

@@ -50,15 +50,34 @@
 <div id="pMusic" class="panel ui">
   <h3>Let it listen</h3>
   <p class="dim">Your music becomes the weather: bass bends gravity, beats ripple the dust, the universe retunes to your song's key and locks to its tempo, and creatures who share its notes are fed.</p>
-  <button class="wide" id="mFile">Play a song file…</button>
+  <button class="wide" id="mFile">Add songs…</button>
+  <button class="wide desk" id="mFolder">Add a whole folder…</button>
+  <div id="pctl" class="row" hidden>
+    <button id="pPrev" title="Previous">⏮</button><button id="pPlay" title="Play / pause">▶</button><button id="pNext" title="Next">⏭</button><button id="pShuffle" title="Shuffle">shuffle</button>
+  </div>
+  <div id="plist"></div>
+  <p class="tiny">Songs stay on this device only (nothing is uploaded). Pick several at once for a playlist; the lock screen and headphone buttons control it. Drop files or a folder anywhere.</p>
   <button class="wide" id="mTab">Listen to a browser tab…</button>
   <p class="tiny">Pick the tab and tick “Share tab audio”. DRM-protected players may share silence.</p>
   <button class="wide" id="mMic">Listen through the microphone</button>
-  <p class="tiny">For Spotify/desktop apps: play through speakers and let the mic hear it. Browsers cannot capture system audio directly.</p>
+  <details>
+    <summary>Spotify, Apple Music, YouTube?</summary>
+    <p class="tiny">They stream locked (DRM) audio, so no app can hand the sound to COSMOS. Instead: play the music on a speaker, TV, laptop or another phone, then tap “Listen through the microphone” here and put this phone nearby. It hears the room, finds the beat and the key, and plays along. Songs you own as files (mp3, m4a, wav, flac, from the Files app or iCloud Drive) work directly with “Add songs”.</p>
+  </details>
+  <details>
+    <summary>Your sounds</summary>
+    <p class="tiny">Give the creatures your own voices: pick a few samples from your library (one-shots, bells, plucks, pads). A note name in the file name (“pad C3.wav”) sets its pitch, otherwise C4. They stay on this device and are never published.</p>
+    <button class="wide" id="mPack">Add samples…</button>
+    <label class="chk"><input type="checkbox" id="sPack"> Creatures sing with my sounds</label>
+    <div class="row"><button id="mPackClear">forget my sounds</button></div>
+    <div id="packStatus" class="tiny"></div>
+  </details>
   <div id="mStatus" class="dim"></div>
   <canvas id="mSpec" width="240" height="34"></canvas>
   <div class="row"><button id="mPlay">pause / play</button><button id="mStop">stop listening</button></div>
-  <input type="file" id="file" accept="audio/*" hidden>
+  <input type="file" id="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus" multiple hidden>
+  <input type="file" id="folder" webkitdirectory multiple hidden>
+  <input type="file" id="packFile" accept="audio/*,.wav,.mp3,.aif,.aiff,.flac,.ogg,.m4a" multiple hidden>
 </div>
 
 <div id="pSettings" class="panel ui">
@@ -100,12 +119,14 @@
 </div>
 
 <script src="js/util.js"></script>
+<script src="js/store.js"></script>
 <script src="js/device.js"></script>
 <script src="js/world.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/instruments.js"></script>
 <script src="js/score.js"></script>
 <script src="js/music.js"></script>
+<script src="js/playlist.js"></script>
 <script src="js/gl.js"></script>
 <script src="js/shaders.js"></script>
 <script src="js/render.js"></script>
@@ -114,6 +135,7 @@
 <script src="js/media.js"></script>
 <script src="js/media2.js"></script>
 <script src="js/media3.js"></script>
+<script src="js/media4.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

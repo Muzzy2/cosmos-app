@@ -1094,6 +1094,15 @@ void main(){
     }
     col += uAcc*glow*0.0025;
     col *= uGain;
+  } else if (uKind == 10){
+    // continuous life: soft bodies, their growing edges lit, a faint wake where they have been
+    vec2 q = uv*uP1.x - 0.5, f = fract(q), i0 = (floor(q) + 0.5)/uP1.x, tx = vec2(1.0/uP1.x, 0.0), ty = vec2(0.0, 1.0/uP1.x);
+    vec4 cc = mix(mix(texture(uField, i0), texture(uField, i0 + tx), f.x), mix(texture(uField, i0 + ty), texture(uField, i0 + tx + ty), f.x), f.y);
+    float v = cc.r, edge = clamp(cc.g, 0.0, 1.0)*smoothstep(0.02, 0.3, v);
+    vec3 body = mix(uMid*0.9, uHot, smoothstep(0.25, 0.85, v));
+    body = mix(body, vec3(1.0), smoothstep(0.85, 1.0, v)*0.35);
+    col = body*smoothstep(0.03, 0.4, v)*1.25 + uAcc*edge*0.6 + uAcc*cc.b*0.07 + uDeep*1.5;
+    col *= uGain;
   } else if (uKind == 9){
     // the Game of Life, drawn as glowing tiles that cool as they age
     float N = uP1.x;
@@ -1472,6 +1481,70 @@ void main(){
 }
 `;
   // ---------------------------------------------------------------- Game of Life (any life-like rule, as bit masks)
+
+  // Continuous life (Lenia / SmoothLife): every cell feels a smooth ring of neighbours and grows or
+  // fades by how full that ring is. Out of this come gliders, worms and dividing cells.
+  C.SH.leniaFS = H + `
+uniform sampler2D uSrc;
+uniform vec2 uTexel;
+uniform float uR, uMu, uSigma, uDt, uMode, uW, uTime;
+uniform int uNBrush;
+uniform vec4 uBrush[12];
+in vec2 vUv;
+out vec4 o;
+vec2 wrapW(vec2 d){ return d - uW*floor(d/uW + 0.5); }
+float h31(vec3 p){ p = fract(p*0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y)*p.z); }
+float s1(float x, float a, float al){ return 1.0/(1.0 + exp(-(x - a)*4.0/al)); }
+void main(){
+  vec4 c = texture(uSrc, vUv);
+  float a = c.r, nxt, grow;
+  int R = int(ceil(uR));
+  if (uMode < 0.5){
+    // Lenia: one smooth shell kernel, a bell-shaped growth curve
+    float sum = 0.0, wsum = 0.0;
+    for (int y = -16; y <= 16; y++){ if (y < -R || y > R) continue;
+      for (int x = -16; x <= 16; x++){ if (x < -R || x > R) continue;
+        float r = length(vec2(float(x), float(y)))/uR;
+        if (r > 1.0) continue;
+        float k = exp(-pow((r - 0.5)/0.15, 2.0)*0.5);
+        sum += k*texture(uSrc, vUv + vec2(float(x), float(y))*uTexel).r;
+        wsum += k;
+      }
+    }
+    float u = sum/max(wsum, 1e-4);
+    grow = 2.0*exp(-pow(u - uMu, 2.0)/(2.0*uSigma*uSigma)) - 1.0;
+    nxt = clamp(a + uDt*grow, 0.0, 1.0);
+  } else {
+    // SmoothLife (Rafler): inner disk m, outer annulus n, birth/death intervals that blend with m
+    float ri = uR/3.0, M = 0.0, Mw = 0.0, N = 0.0, Nw = 0.0;
+    for (int y = -16; y <= 16; y++){ if (y < -R || y > R) continue;
+      for (int x = -16; x <= 16; x++){ if (x < -R || x > R) continue;
+        float r = length(vec2(float(x), float(y)));
+        float v = texture(uSrc, vUv + vec2(float(x), float(y))*uTexel).r;
+        float wi = clamp(ri + 0.5 - r, 0.0, 1.0);
+        float wo = clamp(uR + 0.5 - r, 0.0, 1.0)*(1.0 - wi);
+        M += wi*v; Mw += wi; N += wo*v; Nw += wo;
+      }
+    }
+    float m = M/max(Mw, 1e-4), n = N/max(Nw, 1e-4);
+    float sm = s1(m, 0.5, 0.147);
+    float lo = mix(0.278, 0.267, sm), hi = mix(0.365, 0.445, sm);
+    float s = s1(n, lo, 0.028)*(1.0 - s1(n, hi, 0.028));
+    grow = 2.0*s - 1.0;
+    nxt = clamp(mix(a, s, uDt), 0.0, 1.0);
+  }
+  vec2 wp = (vUv - 0.5)*uW;
+  for (int i = 0; i < 12; i++){
+    if (i >= uNBrush) break;
+    vec4 b = uBrush[i];
+    vec2 d = wrapW(wp - b.xy);
+    float g = exp(-dot(d, d)/(b.z*b.z));
+    if (b.w > 0.0) nxt = max(nxt, g*b.w*step(0.35, h31(vec3(vUv*517.0, uTime))));
+    else nxt *= 1.0 - g;
+  }
+  o = vec4(nxt, grow, max(nxt, c.b*0.94), 1.0);
+}
+`;
   C.SH.lifeFS = H + `
 uniform sampler2D uSrc;
 uniform vec2 uTexel;

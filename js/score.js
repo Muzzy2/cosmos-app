@@ -283,6 +283,8 @@
         if (on && !rest) {
           const pool = [];
           for (const m of this.chord) for (const o of [12, 24]) { const x = m + o; if (x >= 62 && x <= 90) pool.push(x); }
+          // a chord voiced unusually high or low still arpeggiates: fold its notes into the register
+          if (!pool.length) for (const m of this.chord) { let x = m; while (x < 62) x += 12; while (x > 90) x -= 12; pool.push(x); }
           pool.sort((x, y) => x - y);
           const i = this._arpIndex(pool.length, tk.tick);
           const accent = s % 4 === 0 ? 1.25 : 1;
@@ -334,6 +336,9 @@
     }
 
     _play(inst, midi, t, vel, dur, pan, layer) {
+      if (!isFinite(midi)) return;
+      // muted (your song is playing, or creature sounds are off): keep composing, but make no voices
+      if (this.a.scoreMuted && this.a.scoreMuted()) return;
       this.a.playInst(inst, midi, t, vel, dur, pan);
       if (this.keepLog) this.log.push({ t, layer, inst, midi, sec: this.sectionName });
     }

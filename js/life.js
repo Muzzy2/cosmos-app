@@ -288,6 +288,9 @@
       let r = rootPc;
       while (r - this.root > 6) r -= 12;
       while (this.root - r > 6) r += 12;
+      // nearest to where we were, but never drifting out of the home register after many retunes
+      while (r > 11) r -= 12;
+      while (r < -6) r += 12;
       this.root = r;
       if (scaleName && scaleName !== this.scaleName) {
         this.scaleName = scaleName;
@@ -353,7 +356,8 @@
       const pc = this.pcOf(d0);
       s.pcs = s.g.degrees.map((d) => this.pcOf(d));
       const pcol = C.hsl(C.pcHue(pc), 0.78, 0.55), wm = this.palette ? this.palette.mid : pcol;
-      s.col = pcol.map((c, i) => c * 0.8 + wm[i] * 0.2);
+      // a newcomer from another world keeps a little of its home's colour
+      s.col = s.fcol ? pcol.map((c, i) => c * 0.6 + s.fcol[i] * 0.4) : pcol.map((c, i) => c * 0.8 + wm[i] * 0.2);
       const len = this.scale.length;
       s.size = C.clamp(0.33 * Math.pow(2, -d0 / (len * 1.4)), 0.11, 0.7) * (1 + 0.22 * (s.g.degrees.length - 1)) * (s.big || 1);
     }
@@ -1007,7 +1011,10 @@
       this.flipT = Math.max(0, this.flipT - dt);
       if (this.eventT <= 0 && this.intro < 0.1 && this.gain > 0.71) {
         this.eventT = 70 + Math.random() * 90;
-        if (Math.random() < 0.6) {
+        const ev = Math.random();
+        const door = this.orbs.filter((o) => !o.dying && !o.grabbed && o.born >= 1);
+        if (ev < 0.3 && door.length) this._rift(door[Math.floor(Math.random() * door.length)]);
+        else if (ev < 0.72) {
           const cam = this.cam, a = Math.random() * TAU;
           for (let i = 0; i < 14; i++) {
             const sx = cam.x - Math.cos(a) * cam.viewH + (Math.random() - 0.5) * cam.viewH * 1.5;
@@ -1036,6 +1043,47 @@
         }
       }
       this.meteors = this.meteors.filter((m) => m.age < m.life);
+      if (this.rift) this._updateRift(dt);
+    }
+
+    // Two worlds bleed into each other: an orb swells and tears, and the creatures of the world inside it
+    // pour out into this one, carrying their own notes (and their world's key bends this one for a while).
+    _rift(orb) {
+      const inside = C.makeWorld(orb.seed, { notGenus: [this.genus], notStyle: [this.world.style] });
+      this.rift = { orb, t: 0, life: 22, n: 0, max: 10 + Math.floor(Math.random() * 8), species: inside.species, root: inside.root, scale: inside.scale, name: inside.name };
+      orb.rift = 1;
+      this.audio.whoosh(1.6, true);
+      const sp = this._audioSpatial(orb.x, orb.y);
+      this.audio.burst(0.5, sp.pan, orb.chord, 0.3);
+      const allow = C.flash.request(0.7);
+      this.rift.allow = allow; // the halo keeps to the brightness the flash budget allowed
+      this.addRing(orb.x, orb.y, orb.r, orb.r * 5, 2.4, orb.c3, 0.06, allow);
+      this._event('rift', 'a rift has opened to ' + inside.name + ' — its creatures are pouring through');
+    }
+    _updateRift(dt) {
+      const R = this.rift, o = R.orb;
+      R.t += dt;
+      if (!this.orbs.includes(o) || R.t > R.life) { o.rift = 0; this.rift = null; return; }
+      o.rift = Math.min(1, R.t / 2) * (1 - C.smooth(R.life - 3, R.life, R.t)) * R.allow;
+      // creatures spill out over the first part of the rift, each one born of the other world's species
+      if (R.t > 1.5 && R.n < R.max && Math.random() < dt * 1.6) {
+        const sp = R.species[Math.floor(Math.random() * R.species.length)];
+        const g = this._mutate(this._genomeFrom(sp), null, 0.6);
+        // their notes are written in the other world's scale: retranslate into this world's degrees
+        const midi = C.degreeToMidi(g.degrees[0], R.scale, R.root);
+        let best = 0, bd = 1e9;
+        for (let d = -this.scale.length * 2; d <= this.scale.length * 3; d++) { const e = Math.abs(this.midiOf(d) - midi); if (e < bd) { bd = e; best = d; } }
+        g.degrees = [best];
+        const a = Math.random() * TAU;
+        const s = this.spawnSinger(o.x + Math.cos(a) * o.r * 1.1, o.y + Math.sin(a) * o.r * 1.1, g, { vx: Math.cos(a) * 3, vy: Math.sin(a) * 3, energy: 1.6 });
+        if (s) {
+          s.foreign = o.seed;
+          s.fcol = o.c3;
+          this._look(s);
+          R.n++;
+          this.addRing(s.x, s.y, 0.05, 1.4, 0.9, o.c3, 0.05, 0.8 * C.flash.request(0.08));
+        }
+      }
     }
 
     _autonomous() {
@@ -1653,6 +1701,7 @@
       }
       for (const o of this.orbs) {
         if (o.hover > 0.02 && inView(o.x, o.y, 2)) spr(o.x, o.y, 0, (o.r * 1.25) / 0.8, o.c2, o.hover * 0.6, 0, 0.012);
+        if (o.rift > 0.02 && inView(o.x, o.y, 4)) spr(o.x, o.y, 0, (o.r * 3.2) / 0.8, o.c3, o.rift * (0.35 + 0.15 * Math.sin(this.time * 5)), 0, 0.012);
       }
       if (this.cursor.active && settings.wisp) {
         spr(this.cursor.x, this.cursor.y, 0.05, C.clamp(cam.viewH * 0.035, 0.25, 0.8), this.palette.accent, 0.55, 3, 0);
@@ -1665,7 +1714,7 @@
 
       // orbs
       frame.orbs = this.orbs.filter((o) => inView(o.x, o.y, o.r * 2)).map((o) => ({
-        x: o.x, y: o.y, r: o.r, c1: o.c1, c2: o.c2, c3: o.c3, seedF: o.seedF, hover: o.hover, born: Math.max(0, Math.min(1, o.born)), genus: o.pv.genus,
+        x: o.x, y: o.y, r: o.r * (1 + 0.4 * (o.rift || 0)), c1: o.c1, c2: o.c2, c3: o.c3, seedF: o.seedF, hover: Math.max(o.hover, o.rift || 0), born: Math.max(0, Math.min(1, o.born)), genus: o.pv.genus,
       }));
       frame.palette = this.palette;
       frame.sim = sim;

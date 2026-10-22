@@ -75,6 +75,7 @@
         fSplat: G.program(gl, S.fullVS, S.fSplatFS, 'fSplat'),
         ripple: G.program(gl, S.fullVS, S.rippleFS, 'ripple'),
         life: G.program(gl, S.fullVS, S.lifeFS, 'life'),
+        lenia: G.program(gl, S.fullVS, S.leniaFS, 'lenia'),
       };
       // iOS reports float-texture filtering unreliably, so never rely on it there
       this.isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -245,12 +246,23 @@
       return L.ripple;
     }
     // Game of Life state, seeded with a random soup
-    _life(L, res) {
+    _life(L, res, soft, blobs) {
       if (L.life && L.life.res === res) return L.life;
       const gl = this.gl;
       const p = [0, 1].map(() => { const t = G.texture(gl, res, res, gl.RGBA16F, gl.RGBA, gl.FLOAT, gl.NEAREST, gl.REPEAT); return { t, f: G.fbo(gl, [t]) }; });
       const d = new Float32Array(res * res * 4);
-      for (let i = 0; i < res * res; i++) if (Math.random() < 0.22) { d[i * 4] = 1; d[i * 4 + 2] = 1; }
+      if (soft) {
+        // continuous life starts from soft random blobs (a uniform soup just dies or boils)
+        for (let k = 0; k < (blobs || 10); k++) {
+          // a patch of uniform noise a little wider than a creature (Lenia's own way of seeding)
+          const cx = Math.random() * res, cy = Math.random() * res, rr = res * (0.03 + Math.random() * 0.03);
+          for (let y = -rr; y <= rr; y++) for (let x = -rr; x <= rr; x++) {
+            if (x * x + y * y > rr * rr) continue;
+            const i = ((((Math.floor(cy + y) % res) + res) % res) * res + (((Math.floor(cx + x) % res) + res) % res)) * 4;
+            d[i] = Math.random();
+          }
+        }
+      } else for (let i = 0; i < res * res; i++) if (Math.random() < 0.22) { d[i * 4] = 1; d[i * 4 + 2] = 1; }
       for (const x of p) { gl.bindTexture(gl.TEXTURE_2D, x.t); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, res, res, gl.RGBA, gl.FLOAT, d); }
       L.life = { res, p, c: 0 };
       return L.life;
@@ -260,11 +272,19 @@
       gl.disable(gl.BLEND);
       for (let i = 0; i < fd.steps; i++) {
         const a = Lf.p[Lf.c], b = Lf.p[1 - Lf.c];
-        this._pass(this.P.life, b.f, Lf.res, Lf.res, (u) => {
+        this._pass(fd.kind === 10 ? this.P.lenia : this.P.life, b.f, Lf.res, Lf.res, (u) => {
           this._tex(0, a.t, u.uSrc);
           gl.uniform2f(u.uTexel, 1 / Lf.res, 1 / Lf.res);
-          gl.uniform1i(u.uBirth, fd.birth);
-          gl.uniform1i(u.uSurvive, fd.survive);
+          if (fd.kind === 10) {
+            gl.uniform1f(u.uR, fd.R);
+            gl.uniform1f(u.uMu, fd.mu);
+            gl.uniform1f(u.uSigma, fd.sigma);
+            gl.uniform1f(u.uDt, fd.dt);
+            gl.uniform1f(u.uMode, fd.mode);
+          } else {
+            gl.uniform1i(u.uBirth, fd.birth);
+            gl.uniform1i(u.uSurvive, fd.survive);
+          }
           gl.uniform4fv(u.uBrush, fd.brush);
           gl.uniform1i(u.uNBrush, i === 0 ? fd.nBrush : 0);
           gl.uniform1f(u.uW, C.W);
@@ -483,7 +503,11 @@
       const trailW = s.mode === 1 ? this._trailW(L) : null;
       if (f.field && f.field.kind === 3) this._fluid(L, f.field.res, f.field.dyeRes);
       if (f.field && f.field.kind === 4) this._ripple(L, f.field.res);
-      if (f.field && f.field.kind === 9) { this._life(L, f.field.res); if (f.simDt > 0 && f.field.steps) this._stepLife(L, f.field, f.time); }
+      if (f.field && (f.field.kind === 9 || f.field.kind === 10)) {
+        if (f.field.reseed && L.life) { L.life.p.forEach((x) => { gl.deleteTexture(x.t); gl.deleteFramebuffer(x.f); }); L.life = null; }
+        this._life(L, f.field.res, f.field.kind === 10, f.field.blobs);
+        if (f.simDt > 0 && f.field.steps) this._stepLife(L, f.field, f.time);
+      }
       if (f.field && f.field.kind === 3 && f.simDt > 0) this._stepFluid(L, f.field, Math.min(f.simDt, 0.033));
       if (f.field && f.field.kind === 4 && f.simDt > 0) this._stepRipple(L, f.field);
       const fluidTex = s.mode === 5 && L.fluid ? L.fluid.vel[L.fluid.vc].t : s.mode === 6 && L.ripple ? L.ripple.p[L.ripple.c].t : this.noiseTex;
@@ -659,7 +683,7 @@
         gl.useProgram(pr.p);
         this._camU(pr, f);
         const k = f.field.kind;
-        const tex = k === 2 ? this._rd(L)[L.rdCur].t : k === 3 ? L.fluid.dye[L.fluid.dc].t : k === 4 ? L.ripple.p[L.ripple.c].t : k === 9 ? L.life.p[L.life.c].t : k >= 5 ? this.noiseTex : this._trailW(L)[L.trailWCur].t;
+        const tex = k === 2 ? this._rd(L)[L.rdCur].t : k === 3 ? L.fluid.dye[L.fluid.dc].t : k === 4 ? L.ripple.p[L.ripple.c].t : k === 9 || k === 10 ? L.life.p[L.life.c].t : k >= 5 ? this.noiseTex : this._trailW(L)[L.trailWCur].t;
         this._tex(1, this.noiseTex, u.uNoise);
         gl.uniform4fv(u.uP1, f.field.p1 || [0, 0, 0, 0]);
         gl.uniform4fv(u.uP2, f.field.p2 || [0, 0, 0, 0]);

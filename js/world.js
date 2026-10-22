@@ -80,7 +80,7 @@
 
   // Genera: fundamentally different kinds of universe. Each has its own physics, life, sound and verbs.
   // Media: the physics a world is made of. Visitors: an unrelated life form living in it. Styles: how it looks.
-  C.GENERA = ['tide', 'mycelium', 'orrery', 'skin', 'resonance', 'attractor', 'flame', 'plife', 'murmur', 'fluid', 'ripple', 'scope', 'blackhole', 'julia', 'tunnel', 'cathedral', 'life', 'storm'];
+  C.GENERA = ['tide', 'mycelium', 'orrery', 'skin', 'resonance', 'attractor', 'flame', 'plife', 'murmur', 'fluid', 'ripple', 'scope', 'blackhole', 'julia', 'tunnel', 'cathedral', 'life', 'storm', 'lenia'];
   C.GENUS_WORDS = {
     tide: 'a tide of singers',
     mycelium: 'a thinking mould',
@@ -100,6 +100,7 @@
     cathedral: 'a cathedral of mirrors',
     life: 'the Game of Life',
     storm: 'a lightning storm',
+    lenia: 'continuous life',
   };
   C.GENUS_VERBS = {
     tide: 'hold to gather light · drag to stir · right-drag to draw a living melody',
@@ -120,6 +121,7 @@
     cathedral: 'drag to turn the building · tap to send light through it · hold to fold the mirrors',
     life: 'one generation per sixteenth note · tap or drag to seed life · right-drag to erase · keys change the laws',
     storm: 'tap to call lightning · drag for a plasma globe · hold to charge a strike that makes a new pole',
+    lenia: 'tap to drop life · drag to paint it · right-drag to erase · hold for a big seed · keys bend the law of growth',
   };
   C.VISITOR_WORDS = { singers: 'with singing jellies', orrery: 'with a solar system adrift in it', bowls: 'with singing bowls', storm: 'under a lightning storm' };
   const RD_REGIMES = [
@@ -301,6 +303,9 @@
       g.rule = r() < 0.4 ? 0 : Math.floor(r() * 7);
       g.every = [1, 2, 2, 4][Math.floor(r() * 4)];
       w.law = { curl: 0.4, central: 0, cym: 0, sign: 1, drag: 1.4, k: 2, flow: 0.4 };
+    } else if (w.genus === 'lenia') {
+      g.law = Math.floor(r() * 5);
+      w.law = { curl: 0.2, central: 0, cym: 0, sign: 1, drag: 1.6, k: 2, flow: 0.3 };
     } else if (w.genus === 'storm') {
       w.law = { curl: 1.2, central: 0, cym: 0, sign: 1, drag: 1.2, k: 3, flow: 1.2 };
     } else if (w.genus === 'murmur') {
