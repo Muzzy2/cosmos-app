@@ -66,7 +66,9 @@
     const obs = u.obs || (u.obs = { hist: [], seen: {}, fired: {}, chorusT: 0 });
     if (!u.species) u.species = [];
     const live = u.species.filter((sp) => !sp.extinct);
-    for (const sp of live) { sp._n = 0; sp._sum = null; sp._foreign = 0; sp._hyb = 0; sp._motifs = new Map(); sp._ids = new Set(); }
+    for (const sp of live) { sp._n = 0; sp._sum = null; sp._foreign = 0; sp._hyb = 0; sp._motifs = new Map(); sp._ids = new Set(); sp._own = 0; sp._tone = null; }
+    // which singers' instrument genes have carried them to an instrument of their own (style.js C.ownVoice)
+    const base = C.cultureBase && u.world ? C.cultureBase(u.world.seed, u.genus || 'tide') : null;
     const loose = [];
     for (const s of L) {
       const d = C.descriptor(s.g, len);
@@ -101,7 +103,7 @@
       }
       u.species.push(sp);
       live.push(sp);
-      sp._n = 0; sp._sum = null; sp._foreign = 0; sp._hyb = 0; sp._motifs = new Map(); sp._ids = new Set();
+      sp._n = 0; sp._sum = null; sp._foreign = 0; sp._hyb = 0; sp._motifs = new Map(); sp._ids = new Set(); sp._own = 0; sp._tone = null;
       for (const [s, d] of grp) add(sp, s, d);
       for (const g of grp) loose.splice(loose.indexOf(g), 1);
       void s0;
@@ -115,6 +117,10 @@
       if (s.hyb) sp._hyb++;
       const key = s.g.motif.join(',');
       sp._motifs.set(key, (sp._motifs.get(key) || 0) + 1);
+      if (s.g.tone && base && C.ownVoice) {
+        if (C.ownVoice(s.g.tone, base)) sp._own++;
+        if (!sp._tone) sp._tone = s.g.tone.slice(); else for (let i = 0; i < sp._tone.length; i++) sp._tone[i] += s.g.tone[i];
+      }
     }
 
     obs.scans = (obs.scans || 0) + 1;
@@ -185,6 +191,14 @@
         if (!sp.extinct && mature && !sp.dialect && sp.count >= 8 && sp.motifShare >= 0.7 && sp.motif0 && sp.motif.join(',') !== sp.motif0.join(',')) {
           sp.dialect = true;
           events.push({ kind: 'dialect', sp, text: 'the ' + sp.name + ' have a new song, and nearly all of them sing it — a dialect of their own' });
+        }
+        // a new instrument: a native lineage whose instrument genes have evolved until most of it sings with an
+        // instrument of its own (not newcomers, who brought theirs; not a culture that makes its own anyway)
+        if (!sp.extinct && mature && !sp.instrument && base && base.synth <= 0.72 && sp.count >= 8 && sp.foreignShare < 0.5 && sp._own / Math.max(1, sp._n) >= 0.6 && sp._tone) {
+          sp.instrument = true;
+          const tone = sp._tone.map((x) => x / sp._n), model = C.Voices ? C.Voices.modelOfTone(tone) : 'modal';
+          const what = { string: 'a plucked string', modal: tone[1] > 0.6 ? 'a struck bell' : 'a wooden bar', fm: 'a ringing bell of pure tones', pad: 'a slowly breathing tone', voice: 'a voice' }[model] || 'a voice of their own';
+          events.push({ kind: 'instrument', sp, text: 'the ' + sp.name + ' have evolved an instrument of their own: they sing with ' + what });
         }
         // newcomers taking hold
         if (!sp.extinct && !sp.invader && (sp.stable || 0) >= 0.6 && sp.foreignShare >= 0.6 && sp.count >= Math.max(8, L.length * 0.25)) {
@@ -264,6 +278,23 @@
     return best;
   }
 
+  // a discovery's music, compact: times relative to its first note, so the tempo map still lines up later
+  const t0Of = (ns) => Math.min(...ns.map((e) => e.t));
+  const keepNotes = (ns) => { const t0 = t0Of(ns); return ns.map((e) => ({ t: +(e.t - t0).toFixed(3), beat: +e.beat.toFixed(3), layer: e.layer, inst: e.inst, midi: e.midi, vel: +e.vel.toFixed(3), dur: +e.dur.toFixed(2), bpm: Math.round(e.bpm) })); };
+  // the tempo in effect when the first kept note began, and every change after it; a long run of small changes
+  // (time slowing) is thinned, never the start of the map
+  const keepTempos = (ts, ns) => {
+    const t0 = t0Of(ns);
+    let i = ts.findIndex((c) => c.t > t0);
+    if (i < 0) i = ts.length;
+    let kept = ts.slice(Math.max(0, i - 1));
+    for (let tol = 0.5; kept.length > 400 && tol < 64; tol *= 2) {
+      const thin = [kept[0]];
+      for (const c of kept.slice(1)) if (Math.abs(c.bpm - thin[thin.length - 1].bpm) > tol) thin.push(c);
+      kept = thin;
+    }
+    return kept.map((c) => ({ t: +(c.t - t0).toFixed(3), beat: +c.beat.toFixed(3), bpm: +c.bpm.toFixed(2) }));
+  };
   function record(u, ev, hooks) {
     const entry = { t: C.now(), kind: ev.kind, text: ev.text };
     u.log.push(entry);
@@ -276,7 +307,8 @@
       snapshot: C.multiverse ? C.multiverse.recordOf(u) : null,
       // a musical discovery keeps the music around it (compact note events, for MIDI)
       meter: ev.meter ? { n: ev.meter.n, g: ev.meter.g.slice(), name: ev.meter.name } : null,
-      notes: ev.notes ? ev.notes.slice(-1500).map((e) => ({ beat: +e.beat.toFixed(3), layer: e.layer, inst: e.inst, midi: e.midi, vel: +e.vel.toFixed(3), dur: +e.dur.toFixed(2), bpm: Math.round(e.bpm) })) : null,
+      notes: ev.notes ? keepNotes(ev.notes.slice(-1500)) : null,
+      tempos: ev.notes && ev.tempos ? keepTempos(ev.tempos, ev.notes.slice(-1500)) : null,
     };
     journal.add(rec);
     if (hooks && hooks.discover) hooks.discover(u, rec);
@@ -299,7 +331,7 @@
   }
 
   C.Observatory = {
-    SCAN_S, rebase, record,
+    SCAN_S, rebase, record, keepTempos,
     // call every frame with the worlds that are alive; each is scanned every SCAN_S simulated seconds
     tick(worlds, hooks) {
       for (const u of worlds) {

@@ -35,12 +35,40 @@
       const now = events.length ? events[events.length - 1].t : 0;
       return events.filter((e) => e.t >= now - secs && (!world || e.world === world));
     },
+    // the tempo changes that matter for these notes: the one in effect when they begin, and every one after
+    tempoMapFor(evs) {
+      if (!evs.length) return [];
+      const t0 = Math.min(...evs.map((e) => e.t));
+      let i = tempos.findIndex((c) => c.t > t0);
+      if (i < 0) i = tempos.length;
+      return tempos.slice(Math.max(0, i - 1));
+    },
     // A Standard MIDI File (format 1) from these events. Positions are on the beat grid the notes were played
     // on; the tempo can change along the way (slow time, a song's tempo), so the file carries a tempo map.
-    midi(evs, meter, title) {
+    // map: the tempo changes {t, beat, bpm} on the same clock as the notes' t (a kept discovery brings its own;
+    // live notes use the engine's). Notes from before tempo maps were kept carry only their own bpm.
+    midi(evs, meter, title, map) {
       if (!evs.length) return null;
       evs = evs.slice().sort((a, b) => a.beat - b.beat);
-      const PPQ = 480, b0 = Math.floor(evs[0].beat), bpm = evs[0].bpm || 82, bEnd = evs[evs.length - 1].beat;
+      const timed = evs[0].t != null;
+      map = map || (timed ? tempos : null);
+      // a note's length is in seconds: walk it through the tempo map from where it starts
+      const bpmAt = (t, fallback) => { let x = fallback; if (map) for (const c of map) { if (c.t > t) break; x = c.bpm; } return x; };
+      const endBeat = (e) => {
+        if (!timed || !map) return e.beat + (e.dur * (e.bpm || 82)) / 60;
+        let b = e.beat, t = e.t, bp = bpmAt(e.t, e.bpm || 82), left = e.dur;
+        for (const c of map) {
+          if (c.t <= t) continue;
+          if (c.t >= t + left) break;
+          b += ((c.t - t) * bp) / 60; left -= c.t - t; t = c.t; bp = c.bpm;
+        }
+        return b + (left * bp) / 60;
+      };
+      const ends = new Map(evs.map((e) => [e, endBeat(e)]));
+      const PPQ = 480, b0 = Math.floor(evs[0].beat), bpm = timed ? bpmAt(evs[0].t, evs[0].bpm || 82) : evs[0].bpm || 82;
+      // the map runs until the last note has ended, not just begun
+      let bEnd = 0;
+      for (const x of ends.values()) bEnd = Math.max(bEnd, x);
       const vlq = (n) => { const out = [n & 0x7f]; while ((n >>= 7)) out.unshift((n & 0x7f) | 0x80); return out; };
       const str = (s) => Array.from(unescape(encodeURIComponent(s))).map((c) => c.charCodeAt(0));
       const tracks = [];
@@ -53,27 +81,14 @@
       // the tempo map: the engine reports each change with the beat it happened on (a run of small changes,
       // as when time slows, is thinned to steps of more than half a beat per minute)
       let lastBpm = bpm, lastTick = 0;
-      // (notes kept with a discovery come from another session: their own tempos are the map)
-      const map = evs[0].t == null ? evs.map((e) => ({ beat: e.beat, bpm: e.bpm })) : tempos;
-      for (const c of map) {
+      // (notes kept before tempo maps were: their own tempos are the map)
+      for (const c of timed && map ? map : evs.map((e) => ({ beat: e.beat, bpm: e.bpm }))) {
         if (c.beat <= b0 || c.beat > bEnd || Math.abs(c.bpm - lastBpm) <= 0.5) continue;
         const tick = Math.max(lastTick, Math.round((c.beat - b0) * PPQ));
         cond.push(...vlq(tick - lastTick), ...tempoMeta(c.bpm));
         lastTick = tick; lastBpm = c.bpm;
       }
       tracks.push(cond);
-      // a note's length is in seconds: walk it through the tempo map from where it starts
-      const bpmAt = (t, fallback) => { let x = fallback; for (const c of tempos) { if (c.t > t) break; x = c.bpm; } return x; };
-      const endBeat = (e) => {
-        if (e.t == null) return e.beat + (e.dur * (e.bpm || bpm)) / 60; // (kept discoveries carry no times)
-        let b = e.beat, t = e.t, bp = bpmAt(e.t, e.bpm || bpm), left = e.dur;
-        for (const c of tempos) {
-          if (c.t <= t) continue;
-          if (c.t >= t + left) break;
-          b += ((c.t - t) * bp) / 60; left -= c.t - t; t = c.t; bp = c.bpm;
-        }
-        return b + (left * bp) / 60;
-      };
       const by = {};
       for (const e of evs) { const k = TRACKS[e.layer] ? e.layer : 'creatures'; (by[k] = by[k] || []).push(e); }
       for (const k in by) {
@@ -81,7 +96,7 @@
         const msgs = [];
         for (const e of by[k]) {
           const on = Math.max(0, Math.round((e.beat - b0) * PPQ));
-          const len = Math.max(30, Math.round((endBeat(e) - e.beat) * PPQ));
+          const len = Math.max(30, Math.round((ends.get(e) - e.beat) * PPQ));
           const key = k === 'drums' || NOT_PITCHED[e.inst] ? GM_DRUM[e.inst] || 37 : C.clamp(e.midi, 0, 127);
           const c = k === 'drums' || NOT_PITCHED[e.inst] ? 9 : ch;
           const v = C.clamp(Math.round(20 + e.vel * 420), 1, 127);

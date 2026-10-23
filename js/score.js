@@ -95,8 +95,11 @@
     process: {
       seed:  { bars: 8,  e: [0.32, 0.4],  theme: 'A', hr: 2, next: { grow: 1 }, mask: { lead: 0, drums: 0 }, grow: 1 },
       grow:  { bars: 16, e: [0.42, 0.62], theme: 'A', hr: 2, next: { phase: 1 }, grow: 1, mask: { drums: 0.3 } },
-      phase: { bars: 24, e: [0.6, 0.66],  theme: 'A', hr: 2, next: { thin: 1 }, phase: 1 },
-      thin:  { bars: 16, e: [0.58, 0.3],  theme: 'B', hr: 2, next: { seed: 0.5, grow: 0.5 }, thin: 1, mask: { drums: 0 } },
+      phase: { bars: 24, e: [0.6, 0.66],  theme: 'A', hr: 2, next: { thin: 0.75, turn: 0.25 }, phase: 1 },
+      thin:  { bars: 16, e: [0.58, 0.3],  theme: 'B', hr: 2, next: { seed: 0.35, grow: 0.35, turn: 0.3 }, thin: 1, mask: { drums: 0 } },
+      // a turn: other chords, the cell played against a new harmony, before the process starts again (the
+      // long-listen audit: one progression for three minutes)
+      turn:  { bars: 16, e: [0.46, 0.56], theme: 'C', hr: 1, next: { seed: 0.5, grow: 0.5 }, mask: { arp: 0.5, drums: 0.5 } },
     },
     drift: {
       glow:  { bars: 24, e: [0.22, 0.3],  theme: 'A', hr: 2, next: { glow2: 0.6, hush: 0.4 }, mask: { drums: 0 }, texture: 1 },
@@ -178,6 +181,7 @@
       this.echo = [];
       this.voicing = null;
       this.center = 0;
+      this.mood = null; // (a lament belongs to the world it happened in)
       // arrive at the energy you came in with, so a glide never falls into a hole
       const prev = this.energy, first = FIRST[this.form];
       const quiet = (this.fam.maxE || 1) <= 0.75 && (this.fam.minE || 0) < 0.3;
@@ -191,7 +195,7 @@
     // ------------------------------------------------------------------ the grammar, from the culture
     _plan(fresh) {
       const st = this.st, f = this.fam, r = this.r;
-      const prevMeter = this.meter && this.meter.name, prevSecond = this.second ? this.second.name : '';
+      const prevMeter = this.meter && this.meter.name, prevSecond = this.second ? this.second.name : '', prevHarmony = this.harmonyName;
       this.free = st.pulse < 0.22;
       this.meter = st.meterObj;
       this.second = st.second;
@@ -271,7 +275,9 @@
         this.v.grain = V.instrument('modal', [0.7 + 0.3 * tone[0], tone[1], 0.8, 0.2], 'glass');
         if (st.synth > 0.62) this.v.counter = V.instrument(tone[2] > 0.5 ? 'modal' : 'voice', [0.3 + 0.4 * tone[0], 0.3 * tone[1], tone[2], 0.4 + 0.4 * tone[3]], f.notes[1]);
         if (st.synth > 0.55) this.v.canon = V.instrument(V.modelOfTone(tone), tone, f.notes[0]);
-        if (st.synth > 0.5) this.v.drone = V.instrument('pad', [0.15 + 0.25 * tone[0], 0.4 * tone[1], 0.1, 0.3 * tone[3]], f.pad);
+        // (phones always: a buffer drone is one source and one gain, a held oscillator pad about seven nodes for
+        // twelve seconds; the render-cost profile put the drone among a phone's heaviest layers)
+        if (st.synth > 0.5 || this.lite) this.v.drone = V.instrument('pad', [0.15 + 0.25 * tone[0], 0.4 * tone[1], 0.1, 0.3 * tone[3]], f.pad);
         if (st.synth > 0.78 && f.arp) this.v.arp = V.instrument(tone[1] > 0.5 ? 'modal' : 'string', [0.4 + 0.5 * tone[0], tone[1], 0.75, 0.3], f.arp);
         if (st.synth > 0.86 && f.lead) this.v.lead = V.instrument(tone[2] > 0.5 ? 'fm' : 'voice', tone, f.lead);
         this.v.arp2 = this.hocket ? V.instrument('modal', [0.5 * tone[0] + 0.2, 0.3, 0.6, 0.55], f.notes[2]) : f.notes[2];
@@ -288,9 +294,11 @@
       this.words = C.styleWords(st, this.plan);
       // the music changed character because of who lives here now: tell the observatory (at most every 5 minutes)
       const second = this.second ? this.second.name : '', u = this.uni, now = performance.now();
-      if (!fresh && this.onShift && ((prevMeter && prevMeter !== this.meter.name) || (second && second !== prevSecond && second !== this.meter.name)) && now - (u._musicShiftT || -1e9) > 300000) {
+      const meterMoved = (prevMeter && prevMeter !== this.meter.name) || (second && second !== prevSecond && second !== this.meter.name);
+      const harmonyMoved = prevHarmony && prevHarmony !== this.harmonyName;
+      if (!fresh && this.onShift && (meterMoved || harmonyMoved) && now - (u._musicShiftT || -1e9) > 300000) {
         u._musicShiftT = now;
-        this.onShift(u, prevMeter, this.meter.name, this.st);
+        this.onShift(u, prevMeter, this.meter.name, this.st, meterMoved ? null : { from: prevHarmony, to: this.harmonyName });
       }
     }
     // the decisions a culture's genes make; when these change, the grammar is re-made
@@ -347,6 +355,41 @@
       this.motif = this._popMotif(u.songMotif, u.songRhythm || 4);
       this.phrase = this._place(this._develop());
     }
+    // The living world's events move the music (main.js calls this for every discovery in the world you're
+    // in): after an extinction the next section is the form's quietest and the harmony centres on the
+    // relative minor for a section, a lament; when something new is born (a species, a hybrid, a form never
+    // seen, a dialect) the next section is its brightest; when hunters evolve the harmony darkens a while.
+    react(kind, u) {
+      if (!u || u !== this.uni) return null;
+      const F = FORMS[this.form], len = u.scale.length, pick = (names) => names.find((n) => F[n]);
+      let to = null;
+      if (kind === 'extinction') to = pick(['breakdown', 'ebb', 'hush', 'still', 'thin', 'interlude']);
+      else if (/speciation|novel|hybrid|dialect/.test(kind)) to = pick(['peak', 'crest', 'tutti', 'refrain', 'phase', 'glow2']);
+      if (kind === 'extinction' || kind === 'hunters') {
+        const target = this._darker(kind);
+        // a second event during a mood refreshes it, and the music still comes home to where it was before
+        if (target != null) { if (this.mood) { this.mood.center = target; this.mood.left = 1; } else this.mood = { center: target, left: 1, prev: this.center }; }
+      }
+      void len;
+      if (to && to !== this.sectionName) { this.nextName = to; if (this.upcomingLast) this.upcoming = null; }
+      this.reacted = { kind, to, mood: this.mood ? this.mood.center : null };
+      return this.reacted;
+    }
+    // A darker mode of the same scale, from the world's actual scale and where the music is centred now: a
+    // mode's brightness is the sum of its intervals over its root (Lydian brightest, Phrygian darkest of the
+    // usable ones). A lament goes to the minor mode (minor third, perfect fifth) nearest three steps darker, the
+    // relative minor of a major world; hunters to the darkest such mode. A world already that dark stays put.
+    _darker(kind) {
+      const s = this.uni.scale, len = s.length, cur = md(this.center, len);
+      const iv = (c, k) => (((s[(c + k) % len] - s[c]) % 12) + 12) % 12;
+      const bright = (c) => { let b = 0; for (let k = 1; k < len; k++) b += iv(c, k); return b; };
+      const has = (c, x) => { for (let k = 1; k < len; k++) if (iv(c, k) === x) return true; return false; };
+      const bc = bright(cur), cands = [];
+      for (let c = 0; c < len; c++) if (c !== cur && has(c, 3) && !has(c, 4) && has(c, 7) && bright(c) < bc) cands.push(c);
+      if (!cands.length) return null;
+      if (kind === 'hunters') return cands.reduce((x, y) => (bright(y) < bright(x) ? y : x));
+      return cands.reduce((x, y) => (Math.abs(bright(y) - (bc - 3)) < Math.abs(bright(x) - (bc - 3)) ? y : x));
+    }
     // develop the motif: the same, inverted, backwards, stretched, or just its opening
     _develop() {
       const m = this.motif, kind = Math.floor(Math.random() * 6);
@@ -377,6 +420,9 @@
       if (name !== 'intro' && !sections[name]) name = FIRST[this.form][0];
       this.sectionName = name;
       this.sec = name === 'intro' ? Object.assign({ next: { [FIRST[this.form][0]]: 1 } }, INTRO) : sections[name];
+      this.nextName = weighted(Math.random, this.sec.next);
+      this.upcoming = null;
+      this.upcomingLast = false;
       this.barInSec = 0;
       this.secCount++;
       // the culture is re-read at every section: evolution, migration and mixing change the grammar (its
@@ -396,6 +442,8 @@
       if (this.secCount % 7 === 0) { this.motif = this._makeMotif(); this.arpMode = ['up', 'updown', 'walk', 'pendulum'][Math.floor(Math.random() * 4)]; }
       // a modal shift: for a while the music centres on another degree of the same scale, then comes home
       if (this.st.modal > 0.6 && len === 7 && this.secCount % 9 === 0) this.center = this.center ? 0 : [5, 3, 1][Math.floor(Math.random() * 3)];
+      // a mood the world's events asked for lasts a section, then the music comes home
+      if (this.mood) { if (this.mood.left-- > 0) this.center = this.mood.center; else { this.center = this.mood.prev || 0; this.mood = null; } }
       this.phrase = this._place(this._develop());
       // process music grows from one note and thins away again
       this.growN = this.sec.grow ? 1 : 99;
@@ -417,7 +465,7 @@
 
     _bar(tk) {
       const a = this.a;
-      if (this.barInSec >= this.sec.bars) this._enter(weighted(Math.random, this.sec.next));
+      if (this.barInSec >= this.sec.bars) this._enter(this.nextName);
       const s2 = this.sec, prog = s2.theme === 'A' ? this.A : s2.theme === 'B' ? this.B : this.Cth;
       const p = this.barInSec / s2.bars;
       // energy: the section's arc, lifted by a busy ecosystem and by you
@@ -449,8 +497,16 @@
         // never shorter than ~2.4 s: in short odd-meter bars a pad would release before its next chord (heard as gaps)
         const minLen = Math.ceil(2.4 / this.barDur);
         this.chordLen = Math.min(Math.max(minLen, lens[Math.floor(Math.random() * lens.length)]), Math.max(1, s2.bars - this.barInSec));
+        if (this.upcomingLast) this.chordLen = Math.max(1, s2.bars - this.barInSec); // the cadence holds to the end
         this.chordLeft = this.chordLen;
-        this._chord(prog[this.chordIdx % prog.length] + this.center, tk.time, this.chordLen * this.barDur);
+        // the chord chosen one ahead is the one that comes (the bass has already been walking toward it)
+        // (a chord chosen ahead that turns out to fill the rest of the section is chosen again, as a cadence)
+        const isFinal = s2.bars - this.barInSec <= this.chordLen;
+        const deg = this.upcoming != null && (!isFinal || this.upcomingLast) ? this.upcoming : this._nextChord(prog, this.chordIdx, isFinal);
+        const left = s2.bars - this.barInSec - this.chordLen;
+        this.upcomingLast = left > 0 && left <= minLen + 1;
+        this.upcoming = left > 0 ? this._nextChord(prog, this.chordIdx + 1, this.upcomingLast) : null;
+        this._chord(deg + this.center, tk.time, this.chordLen * this.barDur);
       }
       this.chordLeft--;
       // a rising swell into a peak; a low impact when it lands
@@ -460,13 +516,32 @@
       if (this.droneOn && !this.breath && this.barInSec % 4 === 0) {
         const root = intoOctave(u.midiOf(this.center), 43), dur = this.barDur * 4.2;
         this._play(this.v.drone, root, tk.time, 0.026 + 0.016 * this.energy, dur, -0.3, 'drone');
-        if (this.stack[1] !== 1) this._play(this.v.drone, intoOctave(u.midiOf(this.center + (u.scale.length === 7 ? 4 : 3)), 50), tk.time + 0.05, 0.02, dur, 0.3, 'drone');
+        if (this.stack[1] !== 1 && !this.lite) this._play(this.v.drone, intoOctave(u.midiOf(this.center + (u.scale.length === 7 ? 4 : 3)), 50), tk.time + 0.05, 0.02, dur, 0.3, 'drone');
       }
       // how busy the melodic layers were in the bar just gone, against what this culture and energy want
       this.actPrev = this.actNow || 0;
       this.actNow = 0;
       this.actWant = (1.5 + 7 * this.st.density) * (0.35 + this.energy) * (this.meter.n / 16);
       this.barInSec++;
+    }
+
+    // The chord at position i of a section: the theme's progression, varied when it comes round again (a
+    // chord swapped for its relative a third away; in colourful functional cultures a ii-V that leads back
+    // to the start), and, as the section's last chord, a cadence into the next section's first chord, where
+    // the culture's harmony moves functionally (cultures that hover or pendulum don't cadence).
+    _nextChord(prog, i, last) {
+      const len = this.uni.scale.length, n = prog.length, pos = i % n, cycle = Math.floor(i / n), mix = this.mix;
+      let d = prog[pos];
+      if (cycle % 2 === 1 && pos > 0 && Math.random() < 0.3 + 0.4 * this.st.color) {
+        d = pos === n - 1 && len === 7 && mix.fifths > 0.5 ? md(prog[0] + 4, 7) : md(d + (Math.random() < 0.5 ? 2 : -2), len);
+      }
+      const cadential = (mix.functional || 0) + (mix.fifths || 0) > (mix.stasis || 0) + (mix.pendulum || 0);
+      if (last && cadential) {
+        const next = FORMS[this.form][this.nextName], th = next ? next.theme : 'A';
+        const target = (th === 'A' ? this.A : th === 'B' ? this.B : this.Cth)[0];
+        d = len === 7 ? md(target + 4, 7) : md(target - 1, len);
+      }
+      return d;
     }
 
     _chord(deg, t, dur) {
@@ -479,7 +554,9 @@
       this.chordPcs = new Set(midis.map((m) => ((m % 12) + 12) % 12));
       if (this.energy < 0.08 || !this.fam.pad) return;
       // a pad plays at most four voices; with big chords, the root is the bass's
-      const pm = midis.length > 4 ? midis.slice(1, 5) : midis;
+      // (phones: three voices at most, the colour tone first to go: sustained pad voices are a phone's heaviest
+      // layer, by the render-cost profile)
+      const pm = this.lite ? (midis.length > 4 ? midis.slice(1, 4) : midis.slice(0, 3)) : midis.length > 4 ? midis.slice(1, 5) : midis;
       // voice leading: of every inversion that sits around middle C, take the one that moves least
       // (stacks of fourths and clusters keep their shape: inverting them makes different chords)
       const keep = !this.tertian;
@@ -511,7 +588,9 @@
       const prevTop = this.voicing ? this.voicing[this.voicing.length - 1] : null;
       this.voicing = best;
       const vel = (0.04 + 0.035 * this.energy) * (best.length > 3 ? 0.85 : 1);
-      const up = this.fam.pad === 'glassharp' ? 12 : 0;
+      // the glass harmonica sings an octave up, but only a three-note chord: four bright voices up there
+      // pierce (the audit, orrery)
+      const up = this.fam.pad === 'glassharp' && best.length <= 3 ? 12 : 0;
       // a suspension: the top voice holds the old chord's note a step above, then resolves down into the new
       const top = best[best.length - 1];
       const sus = this.suspend && prevTop != null && prevTop - top > 0 && prevTop - top <= 2 && Math.random() < 0.3 + 0.5 * this.st.tension && dur > this.barDur * 0.9;
@@ -564,7 +643,12 @@
         } else on = this.bassCells[e < 0.5 ? 0 : e < 0.75 ? 1 : 2][s];
         if (on) {
           let m = root;
-          if (s === n - 2 && lastStepOfChord) m = Math.random() < 0.5 ? root + 12 : intoOctave(this.chord[2 % this.chord.length], root);
+          if (s === n - 2 && lastStepOfChord && this.upcoming != null && this.tertian && st.density > 0.35) {
+            // an approach note: a scale step from the next chord's root, from the side nearer where we are
+            const tgt = this.upcoming + this.center, a = u.midiOf(tgt - 1), b = u.midiOf(tgt + 1);
+            const near = (x) => { while (x - root > 6) x -= 12; while (root - x > 6) x += 12; return x; };
+            m = Math.abs(near(a) - root) <= Math.abs(near(b) - root) ? near(a) : near(b);
+          } else if (s === n - 2 && lastStepOfChord) m = Math.random() < 0.5 ? root + 12 : intoOctave(this.chord[2 % this.chord.length], root);
           else if (s !== 0 && Math.random() < 0.3) m = root + 12;
           const dur = s === 0 && (e < 0.5 || this.free) ? this.barDur * (this.chordLeft + 1) * 0.95 : td * (s === 0 ? 5 : 2.5);
           this._play(this.v.bass, m, t, (0.035 + 0.015 * e) * (f.bassGain || 1), dur, 0, 'bass');
@@ -681,6 +765,10 @@
           const loose = 0.004 + 0.012 * (1 - st.pulse);
           this._play(name, m, t + swing + Math.random() * loose, vel, inst === 'hat' && s % 4 === 2 && e > 0.8 ? 0.3 : 0.1, inst === 'hat' || inst === 'shaker' ? 0.25 : 0, 'drums');
         }
+      } else if (f.groove === 'clock' && !this.free && accent && e > 0.15 && !this.breath && !/hush|still/.test(this.sectionName)) {
+        // a clockwork world keeps a quiet escapement tick on its beats even before its drums come in (the
+        // audit: an orrery without its tick sounds like wind chimes)
+        this._play('rim', 48, t + Math.random() * 0.003, DRUM_VEL.rim * 0.55 * (f.drumGain || 1), 0.1, 0.25, 'drums');
       }
     }
 

@@ -1123,7 +1123,7 @@
       const meta = document.createElement('div'); meta.className = 'meta';
       const where = document.createElement('span'); where.textContent = d.worldName + ' · ' + ago(d.at);
       meta.appendChild(where);
-      if (d.notes && d.notes.length) { const mb = document.createElement('button'); mb.textContent = 'MIDI'; mb.onclick = () => saveMidi({ world: { seed: d.world, name: d.worldName } }, d.notes, d.text.slice(0, 40), d.meter); meta.appendChild(mb); }
+      if (d.notes && d.notes.length) { const mb = document.createElement('button'); mb.textContent = 'MIDI'; mb.onclick = () => saveMidi({ world: { seed: d.world, name: d.worldName } }, d.notes, d.text.slice(0, 40), d.meter, d.tempos); meta.appendChild(mb); }
       if (d.world !== cur.seed) { const go = document.createElement('button'); go.textContent = 'go there'; go.onclick = () => { closePanels(); visitSeed(d.world); }; meta.appendChild(go); }
       else if (d.snapshot && C.multiverse.valid(d.snapshot)) {
         // reproduce it: put this world back exactly as it was at the moment of the discovery
@@ -1406,23 +1406,25 @@
   }
   // Everything goes in the journal; only the rarer kinds speak up, at most one every three minutes, so a
   // discovery stays an event (the journal button glows when there is something new to read).
-  const LOUD = { novel: 1, hybrid: 1, invasion: 1, dialect: 1, hunters: 1, cycle: 1, chorus: 1, speciation: 1, diaspora: 1, music: 1 };
+  const LOUD = { novel: 1, hybrid: 1, invasion: 1, dialect: 1, hunters: 1, cycle: 1, chorus: 1, speciation: 1, diaspora: 1, music: 1, instrument: 1 };
   // The music of a world changed character because of who lives there now (style.js): a discovery, kept
   // with the two minutes of music around it so it can be taken away as MIDI.
-  function musicShift(u, from, to, st) {
+  function musicShift(u, from, to, st, harmony) {
     if (!u || !u.world) return;
-    const pop = st.pop, two = st.second && st.second.name !== to;
+    const pop = st.pop, two = !harmony && st.second && st.second.name !== to;
     const why = pop && pop.foreignShare > 0.25 ? 'newcomers brought it' : pop && pop.hybShare > 0.25 ? 'its hybrids carry both' : 'its people changed';
-    const text = two ? 'two peoples share ' + u.world.name + ': one counts in ' + to + ', the other in ' + st.second.name + ', and the music plays both at once'
+    const text = harmony ? 'the harmony of ' + u.world.name + ' has changed from ' + harmony.from + ' to ' + harmony.to + ': ' + why
+      : two ? 'two peoples share ' + u.world.name + ': one counts in ' + to + ', the other in ' + st.second.name + ', and the music plays both at once'
       : 'the music of ' + u.world.name + ' has turned from ' + from + ' to ' + to + ': ' + why;
     // the music kept with it was mostly played in the meter it is leaving (or both, for two peoples)
     const meter = C.METERS.find((m) => m.name === from) || (composer && composer.meter);
-    C.Observatory.record(u, { kind: 'music', text, notes: C.Capture ? C.Capture.recent(120, u.world.seed) : null, meter }, { discover });
+    const notes = C.Capture ? C.Capture.recent(120, u.world.seed) : null;
+    C.Observatory.record(u, { kind: 'music', text, notes, tempos: notes && C.Capture.tempoMapFor(notes), meter }, { discover });
   }
-  function saveMidi(u, notes, label, meter) {
+  function saveMidi(u, notes, label, meter, tempos) {
     if (!C.Capture) return;
     const evs = notes || C.Capture.recent(120, u.world.seed);
-    const bytes = C.Capture.midi(evs, meter || (composer && composer.uni === u ? composer.meter : null), u.world.name + (label ? ' · ' + label : ''));
+    const bytes = C.Capture.midi(evs, meter || (composer && composer.uni === u ? composer.meter : null), u.world.name + (label ? ' · ' + label : ''), tempos || null);
     if (!bytes) { showToast('nothing to keep yet', 'let it play a little first'); return; }
     C.Capture.save(new Blob([bytes], { type: 'audio/midi' }), 'COSMOS ' + u.world.name.replace(/[^\w ]+/g, '') + '.mid');
   }
@@ -1431,6 +1433,7 @@
     discoveries++;
     $('bJournal').classList.add('news');
     if (composer && /dialect|invasion|hybrid|novel|speciation/.test(rec.kind)) composer.adoptSong(u);
+    if (composer) composer.react(rec.kind, u);
     if (u !== cur.uni || !LOUD[rec.kind] || performance.now() - lastLoud < 180000) return;
     lastLoud = performance.now();
     showToast('★ ' + rec.text, rec.worldName, null, false);
