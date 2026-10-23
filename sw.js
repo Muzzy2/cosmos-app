@@ -1,5 +1,5 @@
 // COSMOS service worker: network first (updates show on the next launch), cache as the offline fallback.
-const CACHE = 'cosmos-1295155';
+const CACHE = 'cosmos-0ee5f2a';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'js/util.js', 'js/build.js', 'js/genome.js', 'js/store.js', 'js/device.js', 'js/world.js', 'js/audio.js', 'js/instruments.js', 'js/score.js', 'js/music.js', 'js/playlist.js', 'js/gl.js', 'js/shaders.js',

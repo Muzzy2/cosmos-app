@@ -359,7 +359,7 @@
     markInput();
     closePanels();
     if (state === 'intro') { wake(); C.haptic('bloom'); return; }
-    audio.resume();
+    if (!paused) audio.resume();
     auto = null;
     if (e.pointerType === 'touch') {
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -531,6 +531,7 @@
         e.preventDefault();
         e.stopPropagation();
         if (state === 'intro') { wake(); return; }
+        if (!paused) audio.resume();
         const x = ptr.inside ? ptr.wx : cam.x, y = ptr.inside ? ptr.wy : cam.y;
         uni.playKey(i, x, y);
         did.add('key');
@@ -771,7 +772,13 @@
   $('sBuild').textContent = 'build ' + C.BUILD.sha + (C.BUILD.date ? ' · ' + C.BUILD.date : '');
   if (C.device.ios && !C.device.standalone) $('installHow').textContent = 'Make it an app: Safari → Share → Add to Home Screen.';
   // iOS can pause sound while the app is in the background; the next touch brings it back
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && state === 'live') audio.resume(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && state === 'live' && !paused) audio.resume(); });
+  // ...and if the sound is suspended or interrupted while you are here (a call, Siri, an overloaded audio
+  // thread), ask for it back at once; if the system says no, your next touch does it
+  audio.onState = (s) => {
+    if (s === 'running' || s === 'closed' || state !== 'live' || paused || document.hidden) return;
+    setTimeout(() => { if (state === 'live' && !paused && !document.hidden) audio.resume(); }, 300);
+  };
 
   // toasts
   const toastQ = [];

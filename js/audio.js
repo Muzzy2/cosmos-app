@@ -65,6 +65,17 @@
       if (!ctxOverride) try { if ('audioSession' in navigator) navigator.audioSession.type = 'playback'; } catch (e) {}
       const ctx = (this.ctx = ctxOverride || new AC({ latencyHint: 'interactive' }));
       this.started = true;
+      // Every note is a handful of nodes the audio thread renders 375 times a second. A full chorus (26
+      // creature voices of up to three notes each) cost 50-95% of a desktop core (offline render bench,
+      // 2026-10-23), and a phone overloads: crackles, then iOS drops the sound. So the budget counts notes,
+      // not calls (see play), and phones get a smaller one.
+      if (!ctxOverride && C.MOBILE) this.maxVoices = 12;
+      // the context can be suspended or interrupted under us (a call, Siri, an overloaded audio thread):
+      // main.js asks for it back while you are there
+      ctx.onstatechange = () => {
+        if (ctx.state === 'running' && this.held) { ctx.suspend().catch(() => {}); return; }
+        if (this.onState) this.onState(ctx.state);
+      };
       this.clockStart = ctx.currentTime + 0.15;
       this.nextTick = 0;
       this.slotCounts.clear();
@@ -321,16 +332,17 @@
       return { tick: k, time: this.clockStart + k * td };
     }
 
-    _voiceRoom() {
+    // is there room in the budget for n more notes?
+    _voiceRoom(n) {
       const now = this.now();
       this.voiceEnds = this.voiceEnds.filter((e) => e > now);
-      return this.voiceEnds.length < this.maxVoices;
+      return this.voiceEnds.length + (n || 1) <= this.maxVoices;
     }
 
     // Quantised note for a creature. Returns the time it will sound, or null if the band is full.
     requestNote(spec) {
       if (!this.ctx || !this.synthOn) return null;
-      if (!this._voiceRoom()) return null;
+      if (!this._voiceRoom(spec.notes ? spec.notes.length : 1)) return null;
       let { tick, time } = this.nextGrid(0.03);
       for (let i = 0; i < 3; i++) {
         const c = this.slotCounts.get(tick) || 0;
@@ -350,9 +362,11 @@
       if (!this.ctx) return;
       const ctx = this.ctx;
       // the band has a limit: quiet background notes give way when it is crowded
-      if (!this._voiceRoom() && (spec.vel == null ? 0.2 : spec.vel) < 0.2) return;
-      const t = Math.max(time || ctx.currentTime, ctx.currentTime);
       const notes = spec.notes || [spec.midi];
+      if (!this._voiceRoom(notes.length) && (spec.vel == null ? 0.2 : spec.vel) < 0.2) return;
+      // louder notes may go over the budget, but never far: a burst of events can't pile up voices
+      if (this.voiceEnds.length + notes.length > this.maxVoices + 8) return;
+      const t = Math.max(time || ctx.currentTime, ctx.currentTime);
       const vel = C.clamp(spec.vel == null ? 0.2 : spec.vel, 0, 1) / Math.sqrt(notes.length);
       const pan = ctx.createStereoPanner();
       pan.pan.value = C.clamp(spec.pan || 0, -0.95, 0.95);
@@ -376,6 +390,7 @@
         end = Math.max(end, inst(this, t, f, v, dur, pan));
       }
       this.voiceEnds.push(end);
+      for (let i = 1; i < notes.length; i++) this.voiceEnds.push(end); // the budget counts every note
       this.level = Math.min(2, this.level + vel * 1.5);
       releaseAt(ctx, pan, end + 0.3);
     }
@@ -771,11 +786,15 @@
       this.level *= Math.exp(-dt * 1.6);
     }
 
+    // Pause is an intent, not a state: a resume already on its way (after an interruption) must not
+    // undo it, so a context that starts running while held is suspended again (onstatechange in start).
     suspend() {
-      if (this.ctx && this.ctx.state === 'running') this.ctx.suspend();
+      this.held = true;
+      if (this.ctx && this.ctx.state !== 'closed') this.ctx.suspend().catch(() => {});
     }
     resume() {
-      if (this.ctx && this.ctx.state !== 'running') this.ctx.resume();
+      this.held = false;
+      if (this.ctx && this.ctx.state !== 'running' && this.ctx.state !== 'closed') this.ctx.resume().catch(() => {});
     }
   }
 
