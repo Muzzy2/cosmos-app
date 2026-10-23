@@ -1337,6 +1337,19 @@ void main(){
   vec2 uv = vUv;
   vec3 a = styled(uA, uStyleA, uv, uPalA[0], uPalA[1], uPalA[2], uPalA[3]);
   if (uHasB == 0){ o = vec4(a, 1.0); return; }
+  if (uAp.w < 0.0){
+    // a side passage: the neighbouring world (B) lies beyond a soft front across the screen, in direction
+    // uAp.xy, at uAp.z screen heights from the centre. The warp moves the point, not the front, so swapping
+    // A and B (direction and offset negated) draws the same picture: the hand-over can't jump.
+    vec2 q = (uv - 0.5)*vec2(uAspect, 1.0);
+    vec2 wp = vec2(texture(uNoise, uv*1.3 + vec2(uTime*0.012, 0.0)).x, texture(uNoise, uv*1.3 + vec2(0.37, uTime*0.009)).x) - 0.5;
+    float p = dot(q + wp*0.16, uAp.xy) - uAp.z;
+    vec3 b = styled(uB, uStyleB, uv, uPalB[0], uPalB[1], uPalB[2], uPalB[3]);
+    vec3 col = mix(a, b, smoothstep(-0.2, 0.2, p));
+    col += (uPalA[2] + uPalB[2])*0.5*(0.7 + 0.3*sin(uTime*0.5 + q.x*5.0 + q.y*3.0))*exp(-p*p/0.0025)*0.22;
+    o = vec4(col, 1.0);
+    return;
+  }
   float t = uAp.w;
   vec2 d = (uv - uAp.xy)*vec2(uAspect, 1.0);
   float r = length(d)/max(uAp.z, 1e-4);

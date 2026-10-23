@@ -72,7 +72,7 @@
       C.multiverse.remember(world);
       if (uniCache.size > 28) {
         for (const [seed, old] of uniCache) {
-          if ([cur, inner, outer].some((L) => L && L.uni === old)) continue;
+          if (liveLayers().some((L) => L.uni === old)) continue;
           C.multiverse.save(old);
           old.dispose();
           uniCache.delete(seed);
@@ -141,7 +141,8 @@
   // the origin
   const ORIGIN = 1;
   const originWorld = C.makeWorld(ORIGIN, { origin: true });
-  let cur = null, inner = null, outer = null;
+  let cur = null, inner = null, outer = null, side = null; // side: { L, dx, dy }, the neighbour you are heading for
+  const liveLayers = () => [outer, cur, inner, side && side.L].filter(Boolean);
   {
     const { u } = getUniverse(originWorld);
     const gpu = renderer.createLayer(QUALITY[settings.quality].side);
@@ -255,18 +256,53 @@
   }
 
   // ------------------------------------------------------------------ the zoom engine
-  // Choose (or keep) the world inside whatever is under your cursor.
+  // Is this layer on screen now?
+  function shownLayer(L) {
+    if (L === inner) return weightOf(cam.viewH * inner.link.S) > 0;
+    if (L === outer) return !!cur.link && cam.viewH > IN_LO;
+    if (side && L === side.L) return sideShown > 0;
+    return L === cur;
+  }
+  // Before a world is opened as a new layer: two layers must never share one Universe (both would simulate
+  // it, and dropping one disposes the other). An unseen layer of that world is let go; a visible one, or the
+  // world you are in, means no.
+  function freeSeed(seed) {
+    if (seed === cur.seed) return false;
+    for (const L of [inner, outer, side && side.L]) {
+      if (!L || L.seed !== seed) continue;
+      if (shownLayer(L)) return false;
+      if (side && L === side.L) resetTravel();
+      else if (L === inner) { dropLayer(inner); inner = null; }
+      else { dropLayer(outer); outer = null; }
+    }
+    return true;
+  }
+  // a world you asked for (double-click, journal, Enter) is kept while the glide into it lasts
+  const visiting = () => !!(inner && inner.asked && auto && auto.dir < 0);
+  let pendingDive = null; // a dive you asked for while a side passage was on screen: opened once it closes
+  // Choose (or keep) the world inside whatever is under your cursor; force = a world you asked for. Returns
+  // whether that world is (or will be, once a passage closes) the one inside.
   function ensureInner(force) {
     const px = ptr.inside ? ptr.wx : cam.x, py = ptr.inside ? ptr.wy : cam.y;
     const target = force || uni.diveTarget(px, py);
+    if (inner && inner.seed === target.seed) { if (force) { inner.asked = true; pendingDive = null; } return true; }
+    if (!force && (visiting() || pendingDive)) return false; // gliding into a world you asked for: the cursor doesn't re-aim it
+    if (force) pendingDive = null; // a newer request replaces any that was waiting
+    if (force && side) {
+      if (sideShown > 0 || sideWeight(trav.x * side.dx + trav.y * side.dy) > 0) { pendingDive = target; return true; }
+      if (C.MOBILE) resetTravel(); // phones: an unseen neighbour gives way (two living worlds)
+    }
+    if (!freeSeed(target.seed)) return false;
     if (inner) {
-      if (inner.seed === target.seed) return;
       const wI = weightOf(cam.viewH * inner.link.S);
       const off = Math.hypot(wrap(inner.link.ax - px), wrap(inner.link.ay - py)) / cam.viewH;
-      if (!force && (wI > 0.001 || off < 0.4)) return;
+      if (wI > 0.001 || (!force && off < 0.4)) return false; // a membrane on screen is never torn down
       dropLayer(inner);
       inner = null;
     }
+    // at most three living worlds: an unseen neighbour goes; else the world outside (only prepared while a
+    // passage is on screen, since no membrane opens then) makes room
+    if (side && outer) { if (sideShown === 0) resetTravel(); else { dropLayer(outer); outer = null; } }
     const world = C.makeWorld(target.seed, { notGenus: [uni.genus], notStyle: [uni.style] });
     const known = links.get(target.seed);
     const S = known ? known.S : C.clamp(R_IN / Math.max(0.3, target.r), 12, 70);
@@ -274,7 +310,9 @@
     L.link = { ax: target.x, ay: target.y, S, cx: 0, cy: 0 };
     links.set(target.seed, { parentSeed: cur.seed, ax: target.x, ay: target.y, S, cx: 0, cy: 0, depth: cur.depth + 1 });
     if (target.grabbed !== undefined) { target.grabbed = true; L.anchorObj = target; }
+    L.asked = !!force;
     inner = L;
+    return true;
   }
   // Make sure the world around this one exists (inventing one if we started inside it).
   function ensureOuter() {
@@ -289,6 +327,8 @@
       lk = { parentSeed: pSeed, ax: (r() - 0.5) * 8, ay: (r() - 0.5) * 8, S: 26, cx: cam.x, cy: cam.y, depth: cur.depth - 1 };
       links.set(cur.seed, lk);
     }
+    // the world around is already alive as another layer (you asked to go there): it waits, nothing is released
+    if (parentWorld.seed === cur.seed || liveLayers().some((L) => L.seed === parentWorld.seed)) return;
     const L = makeLayer(parentWorld, lk.ax, lk.ay, cur.depth - 1);
     // the place you came from is marked in the outer world by an orb you can fall back into
     if (!L.uni.orbs.some((o) => o.seed === cur.seed)) {
@@ -311,6 +351,7 @@
     Object.assign(cam, { x: m.x, y: m.y, viewH: m.viewH, tx: mt.x, ty: mt.y, tViewH: mt.viewH });
     cam.follow = null;
     if (auto && auto.dir < 0) auto.until = 'settle';
+    resetTravel();
     arrived();
   }
   function becomeOuter() {
@@ -324,7 +365,167 @@
     Object.assign(cam, { x: m.x, y: m.y, viewH: m.viewH, tx: mt.x, ty: mt.y, tViewH: mt.viewH });
     cam.follow = null;
     if (auto && auto.dir > 0) auto.until = 'settle';
+    resetTravel();
     arrived();
+  }
+
+  // ------------------------------------------------------------------ the worlds beside this one
+  // Zooming finds a world inside everything and one around everything; travelling finds the worlds
+  // beside it. Each world sits in a plane of neighbours, one torus per cell: travel far enough one way
+  // and the next world comes up behind a soft front and takes over; come back and the one you left is
+  // still there. Neighbours share a parent, where they lie side by side (one of their tori is W/S of it).
+  // travel where the next world starts to show and has taken over (a phone screen is ~6 wide), and one cell. STEP = D0 + D1
+  // makes the hand-over seamless: from the new world, the old one is exactly as far through its own passage.
+  const SIDE_D0 = 6, SIDE_D1 = 22, SIDE_STEP = SIDE_D0 + SIDE_D1;
+  const sideWeight = (d) => C.smooth(SIDE_D0, SIDE_D1, d);
+  // seed -> { plane, ix, iy }, remembered across visits in localStorage (anything malformed is ignored)
+  const CELLS_KEY = 'cosmos.cells', CELLS_MAX = 600;
+  const cells = (() => {
+    const m = new Map();
+    let raw = [];
+    try { raw = JSON.parse(localStorage.getItem(CELLS_KEY) || '[]'); } catch (e) {}
+    if (!Array.isArray(raw)) return m;
+    for (const e of raw.slice(-CELLS_MAX)) {
+      if (!Array.isArray(e) || e.length !== 2 || !Number.isFinite(e[0])) continue;
+      const c = e[1];
+      if (c && Number.isFinite(c.plane) && Number.isInteger(c.ix) && Number.isInteger(c.iy)) m.set(e[0], { plane: c.plane, ix: c.ix, iy: c.iy });
+    }
+    return m;
+  })();
+  let cellsSaveT = 0, cellsDirty = false;
+  function saveCells() {
+    clearTimeout(cellsSaveT);
+    if (!cellsDirty) return;
+    let list = [...cells];
+    // if storage is full, keep the newer half and try once more; still dirty if that fails too
+    for (let i = 0; i < 2; i++) {
+      try { localStorage.setItem(CELLS_KEY, JSON.stringify(list)); cellsDirty = false; return; } catch (e) { list = list.slice(list.length >> 1); }
+    }
+  }
+  function rememberCell(seed, c) {
+    cells.delete(seed);
+    cells.set(seed, c);
+    while (cells.size > CELLS_MAX) cells.delete(cells.keys().next().value); // the oldest are forgotten first
+    cellsDirty = true;
+    clearTimeout(cellsSaveT);
+    cellsSaveT = setTimeout(saveCells, 1500);
+  }
+  addEventListener('pagehide', saveCells);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveCells(); });
+  const trav = { x: 0, y: 0 }; // how far you have travelled in this world since arriving (unwrapped)
+  const lastCam = { x: 0, y: 0 };
+  const glide = { vx: 0, vy: 0, t: 0 }; // a pan keeps drifting after you let go
+  let sideShown = 0, drifting = false, stillT = 0, lastVh = 13;
+  const travV = { x: 0, y: 0 }; // how the view is moving (smoothed, world units per second)
+  // record how fast a pan moves the view (world units per second), for the glide after you let go
+  function panVelocity(mx, my) {
+    const now = performance.now(), dt = Math.max(0.008, (now - glide.t) / 1000);
+    glide.t = now;
+    if (dt > 0.2) { glide.vx = glide.vy = 0; return; }
+    const k = Math.min(1, dt * 12), cap = cam.viewH * 2.5; // never faster than a slow dissolve can follow
+    glide.vx = C.clamp(glide.vx + (mx / dt - glide.vx) * k, -cap, cap);
+    glide.vy = C.clamp(glide.vy + (my / dt - glide.vy) * k, -cap, cap);
+  }
+  const cellOf = (seed) => cells.get(seed) || { plane: seed, ix: 0, iy: 0 };
+  function resetTravel() {
+    trav.x = trav.y = 0;
+    lastCam.x = cam.x; lastCam.y = cam.y;
+    if (side) { dropLayer(side.L); side = null; }
+    sideShown = 0;
+  }
+  // the plane's own place in its parent (invented as ensureOuter would, if we have never been outside)
+  function planeLink(plane, depth) {
+    let lk = links.get(plane);
+    if (!lk) {
+      const pSeed = C.hash(plane, 'outside'), r = C.rng(pSeed);
+      lk = { parentSeed: pSeed, ax: (r() - 0.5) * 8, ay: (r() - 0.5) * 8, S: 26, cx: 0, cy: 0, depth: depth - 1 };
+      links.set(plane, lk);
+    }
+    return lk;
+  }
+  function ensureSide(dx, dy) {
+    if (side && side.dx === dx && side.dy === dy) return;
+    if (side) { dropLayer(side.L); side = null; }
+    // room for a neighbour: unseen prepared zoom worlds give way (on phones all of them, keeping two living
+    // worlds; on desktops one, if both are prepared), then never more than three
+    const unseen = (L) => L && !shownLayer(L);
+    if (unseen(inner) && (C.MOBILE || outer)) { dropLayer(inner); inner = null; }
+    if (unseen(outer) && (C.MOBILE || inner)) { dropLayer(outer); outer = null; }
+    if (inner && outer) return;
+    const cell = cellOf(cur.seed), ix = cell.ix + dx, iy = cell.iy + dy;
+    const seed = ix === 0 && iy === 0 ? cell.plane : C.hash('side', cell.plane, ix, iy);
+    rememberCell(cur.seed, cell);
+    rememberCell(seed, { plane: cell.plane, ix, iy });
+    if (!links.has(seed)) {
+      const pl = planeLink(cell.plane, cur.depth);
+      links.set(seed, { parentSeed: pl.parentSeed, ax: wrap(pl.ax + (ix * C.W) / pl.S), ay: wrap(pl.ay + (iy * C.W) / pl.S), S: pl.S, cx: 0, cy: 0, depth: cur.depth });
+    }
+    if (!freeSeed(seed)) return; // alive and on screen as another layer
+    const world = C.makeWorld(seed, { notGenus: [uni.genus], notStyle: [uni.style] });
+    side = { L: makeLayer(world, cam.x, cam.y, cur.depth), dx, dy };
+    sideShown = 0;
+    uni._found('beside', 'keep going: every world has neighbours');
+  }
+  function becomeSide() {
+    if (ptr.down && ptr.mode !== 'pan') cancelPointer();
+    if (inner) { dropLayer(inner); inner = null; }
+    if (outer) { dropLayer(outer); outer = null; }
+    const old = cur, s = side;
+    cur = s.L;
+    cur.link = null; // its parent is found from links when you pull back
+    side = { L: old, dx: -s.dx, dy: -s.dy };
+    trav.x -= s.dx * SIDE_STEP;
+    trav.y -= s.dy * SIDE_STEP;
+    sideShown = 1 - sideShown;
+    cam.follow = null;
+    arrived();
+  }
+  // Called every frame after the camera moves: track the travel, prepare, reveal and hand over.
+  function updateSide(realDt) {
+    const mx = wrap(cam.x - lastCam.x), my = wrap(cam.y - lastCam.y);
+    lastCam.x = cam.x; lastCam.y = cam.y;
+    // while you zoom you are not travelling (a zoom about the cursor moves the view, and a zoom you asked for
+    // must not be held up by a passage that keeps reopening)
+    const zooming = Math.abs(Math.log(cam.tViewH / cam.viewH)) > 0.05 || !!auto || !!pendingDive;
+    const zoomPair = (inner && weightOf(cam.viewH * inner.link.S) > 0) || (outer && cur.link && cam.viewH > IN_LO);
+    // (and while a zoom membrane is open the travel is the zoom's, not a journey sideways: no hidden credit)
+    if (!zooming && !zoomPair) { trav.x += mx; trav.y += my; }
+    const kv = C.damp(4, realDt), idt = 1 / Math.max(realDt, 1e-3);
+    travV.x += (mx * idt - travV.x) * kv;
+    travV.y += (my * idt - travV.y) * kv;
+    const travSpeed = Math.hypot(travV.x, travV.y);
+    // still for a while with no passage open: the journey's credit fades, so a neighbour you are not
+    // heading for is let go (a third living world costs a phone dearly)
+    stillT = travSpeed < 0.25 && !drifting ? stillT + realDt : 0;
+    if (stillT > 2 && (!side || sideShown === 0)) { const k = Math.exp(-realDt * 1.2); trav.x *= k; trav.y *= k; }
+    const along = Math.max(Math.abs(trav.x), Math.abs(trav.y));
+    const dx = Math.abs(trav.x) >= Math.abs(trav.y) ? Math.sign(trav.x) : 0, dy = dx ? 0 : Math.sign(trav.y);
+    let w = side ? sideWeight(trav.x * side.dx + trav.y * side.dy) : 0;
+    // no neighbour needed (or a different one): let it go, but only once it has faded from view
+    if (side && w === 0 && sideShown === 0 && (zooming || along < SIDE_D0 - 5 || ((dx !== side.dx || dy !== side.dy) && along > SIDE_D0 - 2))) { dropLayer(side.L); side = null; }
+    if (!side && !zoomPair && !zooming && state === 'live' && along > SIDE_D0 - 2 && (dx || dy)) ensureSide(dx, dy);
+    w = side ? sideWeight(trav.x * side.dx + trav.y * side.dy) : 0;
+    if (side && w > 0.5) { becomeSide(); w = sideWeight(trav.x * side.dx + trav.y * side.dy); }
+    // what you see follows the travel, but never faster than a slow dissolve (no sudden change of light)
+    sideShown += C.clamp(w - sideShown, -realDt * 0.9, realDt * 0.9);
+    if (side && (w > 0 || sideShown > 0)) {
+      // standing still part-way, zooming, or heading across instead: the passage closes again (only the
+      // travel relaxes, the view stays where it is), so you are always fully somewhere
+      const zoomWish = zooming; // a zoom under way, not a zoom level
+      const across = Math.abs(travV.x * side.dx + travV.y * side.dy) < 0.5 * travSpeed;
+      if (w > 0 && ((travSpeed < 0.25 && !drifting) || zoomWish || across)) {
+        const d = trav.x * side.dx + trav.y * side.dy, nd = Math.max(SIDE_D0 - 1, d - (zoomWish ? 14 : 6) * realDt);
+        trav.x -= side.dx * (d - nd);
+        trav.y -= side.dy * (d - nd);
+      }
+      // and no zoom membrane opens while a side passage is on screen: the view waits, your zoom target is kept
+      // and resumes when it closes (only a glide of our own is held back). With no world inside prepared, hold
+      // above where any new one's membrane could open (S >= 12).
+      const lo = inner ? (IN_HI / inner.link.S) * 1.02 : Math.min(lastVh, (IN_HI / 12) * 1.02), hi = IN_LO * 0.97;
+      cam.viewH = C.clamp(cam.viewH, lo, hi);
+      if (auto) cam.tViewH = C.clamp(cam.tViewH, lo, hi);
+    }
+    lastVh = cam.viewH;
   }
   const arrivedAt = new Map();
   function arrived() {
@@ -361,6 +562,7 @@
     if (state === 'intro') { wake(); C.haptic('bloom'); return; }
     if (!paused) audio.resume();
     auto = null;
+    glide.vx = glide.vy = 0; // a touch catches a glide
     if (e.pointerType === 'touch') {
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (touches.size === 2) {
@@ -368,6 +570,7 @@
         const [a, b] = [...touches.values()];
         const d = Math.hypot(a.x - b.x, a.y - b.y);
         pinch = { d, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, d0: d, t0: performance.now() };
+        uni._found('travel', 'drag with two fingers to travel: every world has neighbours');
         return;
       }
       if (touches.size > 2) return;
@@ -426,6 +629,7 @@
         const [w0x, w0y] = toWorld(pinch.cx, pinch.cy), [w1x, w1y] = toWorld(cx, cy);
         cam.tx = wrap(cam.tx - wrap(w1x - w0x));
         cam.ty = wrap(cam.ty - wrap(w1y - w0y));
+        panVelocity(-wrap(w1x - w0x), -wrap(w1y - w0y));
         pinch.moved = (pinch.moved || 0) + Math.abs(d - pinch.d) + Math.hypot(cx - pinch.cx, cy - pinch.cy);
         Object.assign(pinch, { d, cx, cy });
         return;
@@ -455,6 +659,7 @@
       const [ax, ay] = toWorld(px, py);
       cam.tx = wrap(cam.tx - wrap(ptr.wx - ax));
       cam.ty = wrap(cam.ty - wrap(ptr.wy - ay));
+      panVelocity(-wrap(ptr.wx - ax), -wrap(ptr.wy - ay));
     }
   });
 
@@ -493,9 +698,7 @@
       // double tap on touch screens: glide into whatever you tapped
       const now = performance.now();
       if (e.pointerType === 'touch' && lastTap && now - lastTap.t < 320 && Math.hypot(ptr.x - lastTap.x, ptr.y - lastTap.y) < 40) {
-        ensureInner(uni.diveTarget(ptr.wx, ptr.wy));
-        auto = { dir: -1 };
-        C.haptic('arrive');
+        if (ensureInner(uni.diveTarget(ptr.wx, ptr.wy))) { auto = { dir: -1 }; C.haptic('arrive'); }
         lastTap = null;
       } else lastTap = { t: now, x: ptr.x, y: ptr.y };
     } else if (ptr.mode === 'charge' || ptr.mode === 'pending') {
@@ -555,8 +758,7 @@
     }
     cam.follow = null;
     const target = uni.diveTarget(wx, wy);
-    ensureInner(target);
-    auto = { dir: -1 };
+    if (ensureInner(target)) auto = { dir: -1 };
   });
 
   function zoomAt(px, py, factor) {
@@ -615,7 +817,7 @@
       case 'KeyP': togglePause(); break;
       case 'Escape': if (anyPanelOpen()) closePanels(); else auto = { dir: 1 }; break;
       case 'Backspace': auto = { dir: 1 }; break;
-      case 'Enter': ensureInner(); auto = { dir: -1 }; break;
+      case 'Enter': if (ensureInner(uni.diveTarget(ptr.inside ? ptr.wx : cam.x, ptr.inside ? ptr.wy : cam.y))) auto = { dir: -1 }; break;
       case 'Equal': case 'NumpadAdd': zoomAt(innerWidth / 2, innerHeight / 2, 0.8); break;
       case 'Minus': case 'NumpadSubtract': zoomAt(innerWidth / 2, innerHeight / 2, 1.25); break;
       case 'Slash': togglePanel('pHelp'); break;
@@ -673,6 +875,7 @@
   $('bForget').onclick = async () => {
     if (!confirm('Forget every world, every species and every discovery on this device? This cannot be undone.')) return;
     await C.multiverse.forgetAll();
+    clearTimeout(cellsSaveT); cells.clear(); cellsDirty = false; try { localStorage.removeItem(CELLS_KEY); } catch (e) {} // and where worlds lay
     C.journal.clear();
     // start again from a new seed of a universe (the worlds alive in memory would otherwise live on)
     location.reload();
@@ -714,7 +917,7 @@
   music.onKey = (k) => {
     musicKey = k;
     let fit = null;
-    for (const L of [outer, cur, inner]) if (L) { const f = L.uni.fitKey(music.chromaLong, k); if (L === cur) fit = f; }
+    for (const L of liveLayers()) { const f = L.uni.fitKey(music.chromaLong, k); if (L === cur) fit = f; }
     showToast('it has learned the notes of your song', fit ? 'retuning to ' + fit.name + ' so every world plays along' : 'this world keeps its own strange scale');
   };
 
@@ -729,13 +932,13 @@
   function setQuality(q) {
     settings.quality = q; sQual.value = q; saveSettings();
     // rebuild every live world at the new detail
-    for (const L of [outer, cur, inner]) {
-      if (!L) continue;
+    for (const L of liveLayers()) {
       renderer.destroyLayer(L.gpu);
       L.gpu = renderer.createLayer(QUALITY[settings.quality].side);
       L.uni.gpu = L.gpu;
       renderer.use(L.gpu);
-      L.uni.gpuInit(renderer, L === cur ? cam.x : 0, L === cur ? cam.y : 0);
+      const here = L === cur || (side && L === side.L);
+      L.uni.gpuInit(renderer, here ? cam.x : 0, here ? cam.y : 0);
       L.prevCam = null;
     }
     resize();
@@ -967,7 +1170,9 @@
     const w = cur.world;
     $('worldName').textContent = w.name;
     const d = cur.depth;
-    const depth = d === 0 ? 'origin' : d > 0 ? 'depth ' + d : 'outside ' + -d;
+    const cell = cellOf(cur.seed);
+    const away = (cell.ix ? Math.abs(cell.ix) + (cell.ix > 0 ? ' east' : ' west') : '') + (cell.ix && cell.iy ? ' ' : '') + (cell.iy ? Math.abs(cell.iy) + (cell.iy > 0 ? ' north' : ' south') : '');
+    const depth = (d === 0 ? (away ? 'beside the origin' : 'origin') : d > 0 ? 'depth ' + d : 'outside ' + -d) + (away ? ' · ' + away : '');
     const key = C.NOTE_NAMES[((uni.root % 12) + 12) % 12] + ' ' + uni.scaleName;
     $('worldMeta').textContent = `${C.describeWorld(w)} · ${key} · ${Math.round(audio.bpm / (1 - slow * 0.65))} bpm · ${uni.env.word} · ${depth}`;
     const census = uni.census();
@@ -1044,8 +1249,17 @@
         if (Math.abs(cam.tViewH - (auto.dir < 0 ? 11 : 14)) < 0.5) auto = null;
       } else cam.tViewH *= Math.exp(auto.dir * dt * 1.15);
     }
+    // a pan you let go of keeps gliding (on phones especially: a flick sends you on your way)
+    if (!pinch && ptr.mode !== 'pan' && (glide.vx || glide.vy)) {
+      cam.tx = wrap(cam.tx + glide.vx * dt);
+      cam.ty = wrap(cam.ty + glide.vy * dt);
+      const k = Math.exp(-dt * 1.8);
+      glide.vx *= k; glide.vy *= k;
+      if (Math.hypot(glide.vx, glide.vy) < cam.viewH * 0.01) glide.vx = glide.vy = 0;
+    }
     // idle drift: the camera wanders after the life
-    if (state === 'live' && idleTime > 30 && !cam.follow && !ptr.down && !auto) {
+    drifting = state === 'live' && idleTime > 30 && !cam.follow && !ptr.down && !auto;
+    if (drifting) {
       let sx = 0, sy = 0, n = 0;
       for (const s of uni.singers) {
         const dx = wrap(s.x - cam.x), dy = wrap(s.y - cam.y);
@@ -1083,21 +1297,30 @@
   // Keep the stack of worlds in step with the zoom: create, reveal, hand over, release.
   function updateStack(realDt) {
     if (state !== 'live') return;
-    // the world inside: chosen as you approach, re-chosen if you aim somewhere else
+    // the worlds beside: travelled into sideways
+    updateSide(realDt);
+    // while a side passage is on screen the zoom stack waits (no new world inside or outside, no hand-over);
+    // phones never prepare a zoom world beside a neighbour (two living worlds there, three on desktops)
+    const passage = !!side && (sideShown > 0 || sideWeight(trav.x * side.dx + trav.y * side.dy) > 0);
+    const room = !passage && !(C.MOBILE && side);
+    // the world inside: chosen as you approach, re-chosen if you aim somewhere else (at most three live worlds)
     innerCheckT -= realDt;
-    if (cam.viewH < 10 && innerCheckT <= 0) { innerCheckT = 0.8; ensureInner(); }
-    if (inner && cam.viewH > 16 && weightOf(cam.viewH * inner.link.S) === 0) { dropLayer(inner); inner = null; }
+    if (pendingDive && !(auto && auto.dir < 0)) pendingDive = null; // you changed your mind
+    if (pendingDive && room) { const t = pendingDive; pendingDive = null; ensureInner(t); }
+    if (cam.viewH < 10 && innerCheckT <= 0 && room && !(side && outer)) { innerCheckT = 0.8; ensureInner(); }
+    if (inner && cam.viewH > 16 && weightOf(cam.viewH * inner.link.S) === 0 && !visiting()) { dropLayer(inner); inner = null; }
     // the world outside: prepared as you pull back
-    if (cam.viewH > 15) ensureOuter();
+    if (cam.viewH > 15 && room && !(side && inner)) ensureOuter();
     if (outer && cam.viewH < 10 && !(cur.link && weightOf(cam.viewH) < 1)) { dropLayer(outer); outer = null; }
     // hand over at the halfway point, in either direction
+    if (passage) return;
     if (inner && weightOf(cam.viewH * inner.link.S) > 0.5) becomeInner();
     else if (outer && cur.link && cam.viewH > IN_LO && weightOf(cam.viewH) < 0.5) becomeOuter();
   }
 
   // ------------------------------------------------------------------ the living multiverse (COSMOS 4)
   let mvSaveT = 20, pressureT = 10;
-  function livingWorlds() { return [outer, cur, inner].filter(Boolean).map((L) => L.uni); }
+  function livingWorlds() { return liveLayers().map((L) => L.uni); }
   function livingMultiverse(realDt) {
     const live = livingWorlds();
     // migrants that slipped into an orb arrive in the world inside: live if it is awake, else they wait
@@ -1175,6 +1398,7 @@
 
   // ------------------------------------------------------------------ main loop
   let last = performance.now();
+  let showT = 0; // the picture's own clock: it runs on through every hand-over between worlds
   let fps = 60;
   let slowBpmApplied = 0;
   const raf = /[?&]drive/.test(location.search) ? (cb) => setTimeout(() => cb(performance.now()), 16) : requestAnimationFrame.bind(window);
@@ -1223,6 +1447,7 @@
     slow += ((slowHeld ? 1 : 0) - slow) * C.damp(slowHeld ? 5 : 3, realDt);
     const timeScale = paused ? 0 : 1 - slow * 0.85;
     const dt = realDt * timeScale;
+    showT += dt;
 
     const baseBpm = music.active && music.tempo && music.tempoConf > 0.3 ? music.tempo : cur.world.bpm;
     const wantBpm = baseBpm * (1 - slow * 0.65);
@@ -1238,15 +1463,19 @@
 
     // which two worlds are on screen, and how far through the membrane are we?
     let A = cur, B = null, camA = cam, camB = null, t = 0, link = null;
-    if (inner && weightOf(cam.viewH * inner.link.S) > 0) {
+    if (side && sideShown > 0) {
+      B = side.L; camB = cam; t = sideShown; // a side passage (it keeps the screen until it closes): the neighbour shares your camera
+    } else if (inner && weightOf(cam.viewH * inner.link.S) > 0) {
       B = inner; link = inner.link; camB = toInner(link, cam); t = weightOf(camB.viewH);
     } else if (outer && cur.link && cam.viewH > IN_LO) {
       A = outer; B = cur; link = cur.link; camA = toOuter(link, cam); camB = cam; t = weightOf(cam.viewH);
     }
+    const sidePass = !!side && B === side.L;
     // a world being prepared out of sight still lives (CPU and GPU), so it never 'starts' when revealed
-    let prep = null;
+    let prep = null, prep2 = null;
     if (inner && inner !== B) prep = { L: inner, cam: toInner(inner.link, cam) };
     else if (outer && outer !== A && cur.link) prep = { L: outer, cam: toOuter(cur.link, cam) };
+    if (side && !sidePass) prep2 = { L: side.L, cam };
 
     if (!paused) {
       music.update(realDt);
@@ -1273,8 +1502,9 @@
       const gA = B ? 1 - t : 1;
       simulate(A, camA, dt, realDt, ticks, A === cur, gA);
       if (B) simulate(B, camB, dt, realDt, ticks, B === cur, t);
-      for (const L of [outer, cur, inner]) if (L && L !== A && L !== B) L.uni.setGain(0);
+      for (const L of liveLayers()) if (L !== A && L !== B) L.uni.setGain(0);
       if (prep) simulate(prep.L, prep.cam, dt, realDt, ticks, false, 0);
+      if (prep2) simulate(prep2.L, prep2.cam, dt, realDt, ticks, false, 0);
       livingMultiverse(realDt);
       for (const ev of C.uiEvents) showToast(ev.text);
       C.uiEvents.length = 0;
@@ -1285,19 +1515,27 @@
     const fA = frameFor(A, camA, paused ? 0 : dt, realDt, decay60);
     renderer.renderLayer(A.gpu, fA);
     if (prep) renderer.renderLayer(prep.L.gpu, frameFor(prep.L, prep.cam, paused ? 0 : dt, realDt, decay60));
+    if (prep2) renderer.renderLayer(prep2.L.gpu, frameFor(prep2.L, prep2.cam, paused ? 0 : dt, realDt, decay60));
     let ap = null;
     if (B) {
       const fB = frameFor(B, camB, paused ? 0 : dt, realDt, decay60);
       renderer.renderLayer(B.gpu, fB);
-      const rx = wrap(link.ax - camA.x), ry = wrap(link.ay - camA.y);
       const c = Math.cos(cam.roll), s = Math.sin(cam.roll);
-      const sx = c * rx - s * ry, sy = s * rx + c * ry;
-      ap = { x: 0.5 + sx / (camA.viewH * cam.aspect), y: 0.5 + sy / camA.viewH, r: R_IN / camB.viewH, t };
+      if (sidePass) {
+        // the front between the two worlds: the neighbour's direction on screen, and how far across it is
+        const ux = c * side.dx - s * side.dy, uy = s * side.dx + c * side.dy;
+        const E = 0.5 * (Math.abs(ux) * cam.aspect + Math.abs(uy)) + 0.25;
+        ap = { x: ux, y: uy, r: E - 2 * E * t, t: -1 };
+      } else {
+        const rx = wrap(link.ax - camA.x), ry = wrap(link.ay - camA.y);
+        const sx = c * rx - s * ry, sy = s * rx + c * ry;
+        ap = { x: 0.5 + sx / (camA.viewH * cam.aspect), y: 0.5 + sy / camA.viewH, r: R_IN / camB.viewH, t };
+      }
     }
     const styA = C.STYLES[A.uni.style || 0], styB = B ? C.STYLES[B.uni.style || 0] : styA;
     const mixS = (k) => (B ? styA[k] * (1 - t) + styB[k] * t : styA[k]);
     renderer.post({
-      time: uni.time, realDt,
+      time: showT, realDt,
       bloomAmt: (0.3 + 0.45 * settings.intensity) * mixS('bloom'),
       exposure: 1,
       safeLum: (settings.strongGuard ? 0.3 : 0.5) * mixS('safe'),
@@ -1318,21 +1556,31 @@
   const visitGenus = (genus, opts) => {
     const seed = C.hash('visit', genus, Math.random());
     C.makeWorld(seed, Object.assign({ genus, notStyle: [uni.style] }, opts || {}));
-    ensureInner({ x: cam.x, y: cam.y, r: 0.6, seed, c2: uni.palette.hot });
-    auto = { dir: -1 };
+    if (ensureInner({ x: cam.x, y: cam.y, r: 0.6, seed, c2: uni.palette.hot })) auto = { dir: -1 };
   };
   function visitSeed(seed) {
     if (seed === cur.seed) return;
+    if (side && side.L.seed === seed && sideShown > 0) {
+      // the neighbour still on screen: finish the passage into it (the dissolve keeps its own pace)
+      const d = trav.x * side.dx + trav.y * side.dy;
+      if (d < SIDE_D1) { trav.x += side.dx * (SIDE_D1 - d); trav.y += side.dy * (SIDE_D1 - d); }
+      pendingDive = null; auto = null; // this request replaces any dive that was waiting
+      showToast('a door opens', 'to ' + side.L.world.name);
+      return;
+    }
     const def = C.mvDef(seed);
     C.makeWorld(seed, def ? Object.assign({}, def) : { notGenus: [uni.genus], notStyle: [uni.style] });
-    ensureInner({ x: cam.x, y: cam.y, r: 0.6, seed, c2: uni.palette.hot });
-    auto = { dir: -1 };
+    // the world around you, already on screen: rise out into it
+    if (outer && outer.seed === seed && shownLayer(outer)) auto = { dir: 1 };
+    else if (ensureInner({ x: cam.x, y: cam.y, r: 0.6, seed, c2: uni.palette.hot })) auto = { dir: -1 };
+    else return;
     showToast('a door opens', 'to ' + C.makeWorld(seed).name);
   }
   C.app = {
     get uni() { return cur.uni; }, audio, music, renderer, cam, settings, wake, visitGenus, visitSeed, playlist, pack, uniCache, links, livingWorlds,
-    get state() { return state; }, get layers() { return { outer: outer && outer.world.name, cur: cur.world.name, inner: inner && inner.world.name }; },
-    zoomIn: () => { ensureInner(); auto = { dir: -1 }; }, zoomOut: () => { auto = { dir: 1 }; },
+    get state() { return state; }, get layers() { return { outer: outer && outer.world.name, cur: cur.world.name, inner: inner && inner.world.name, side: side && side.L.world.name }; },
+    get travel() { return { x: +trav.x.toFixed(1), y: +trav.y.toFixed(1), shown: +sideShown.toFixed(2), cell: cellOf(cur.seed), dir: side && [side.dx, side.dy], auto: auto && (auto.until || auto.dir), pending: !!pendingDive, seeds: { cur: cur.seed, inner: inner && inner.seed, outer: outer && outer.seed, side: side && side.L.seed } }; },
+    zoomIn: () => { if (ensureInner(uni.diveTarget(ptr.inside ? ptr.wx : cam.x, ptr.inside ? ptr.wy : cam.y))) auto = { dir: -1 }; }, zoomOut: () => { auto = { dir: 1 }; },
   };
   // Test hook: record what you'd hear for `sec` seconds and save it as a WAV (needs `node serve.js --dev`).
   // Only on a local server: the published app has no reason to send audio anywhere.
