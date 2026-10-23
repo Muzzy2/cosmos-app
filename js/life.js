@@ -325,13 +325,38 @@
     }
 
     // ------------------------------------------------------------------ genomes and creatures
-    _genomeFrom(sp) {
-      return C.fillGenome({
+    // from: the world a founding species belongs to (another one, for creatures pouring out of a rift)
+    _genomeFrom(sp, from) {
+      const g = C.fillGenome({
         degrees: sp.degrees ? sp.degrees.slice() : [sp.degree],
         timbre: sp.timbre, lobes: sp.lobes, rhythm: sp.rhythm, speed: sp.speed,
         social: sp.social, spike: sp.spike,
         diet: sp.diet, climate: sp.climate, hardy: sp.hardy, wander: sp.wander, motif: sp.motif ? sp.motif.slice() : null,
       }, this.env ? this.env.warmth : 0.5);
+      // founders are born into their world's musical culture, each species with its own accent and instrument
+      if (C.cultureBase) {
+        const seed = from ? from.seed : this.world.seed, genus = (from && from.genus) || this.genus;
+        g.cult = sp.cult ? sp.cult.slice() : C.cultForSpecies(seed, genus, sp);
+        g.tone = sp.tone ? sp.tone.slice() : C.toneForSpecies(seed, genus, sp);
+      }
+      return g;
+    }
+    // the instrument a singer sings with: its own (style.js C.ownVoice), or null for its world's band
+    _voiceTone(s) {
+      if (!s.g.tone || !C.ownVoice) return null;
+      if (s._vt !== s.g.tone) { s._vt = s.g.tone; s._own = C.ownVoice(s.g.tone, C.cultureBase(this.world.seed, this.genus)); }
+      return s._own ? s.g.tone : null;
+    }
+    // any singer without cultural genes (an older save, a creature born of nothing) takes this world's
+    // (deterministic: drawn from the world and the creature's own inherited genes, so restoring the same
+    // save twice gives the same population)
+    _fillCulture(g) {
+      if (!C.cultureBase || (g.cult && g.tone)) return g;
+      const base = C.cultureBase(this.world.seed, this.genus);
+      const r = C.rng(C.hash(this.world.seed, 'fill', (g.degrees || []).join(','), g.timbre, g.lobes, g.rhythm, g.speed, g.social, g.spike, (g.motif || []).join(',')));
+      if (!g.cult) g.cult = C.cultForFounder(base, r);
+      if (!g.tone) g.tone = base.tone.map((x) => C.clamp(x + (r() - 0.5) * 0.2, 0, 1));
+      return g;
     }
     _mutate(g, r, rate) {
       r = r || Math.random;
@@ -351,13 +376,14 @@
       n.social = C.clamp(n.social + (r() - 0.5) * 0.2 * rate, 0, 1);
       n.spike = C.clamp(n.spike + (r() - 0.5) * 0.2 * rate, 0, 1);
       C.mutateTraits(n, r, rate);
+      if (C.mutateCulture) C.mutateCulture(n, r, rate);
       return n;
     }
 
     spawnSinger(x, y, g, opts) {
       if (this.singers.length >= MAX_SINGERS) return null;
       opts = opts || {};
-      g = C.fillGenome(g, this.env ? this.env.warmth : 0.5);
+      g = this._fillCulture(C.fillGenome(g, this.env ? this.env.warmth : 0.5));
       const s = {
         id: this.nextId++, x: wrap(x), y: wrap(y), vx: opts.vx || 0, vy: opts.vy || 0,
         heading: Math.random() * TAU, g, energy: opts.energy || 1.0, age: 0,
@@ -486,7 +512,7 @@
       if (vel > 0.012) {
         // it sings its song: one step of its motif per pulse
         const notes = s.g.degrees.map((d) => this.midiOf(d + step));
-        t = this.audio.requestNote({ notes, timbre: s.g.timbre, vel, pan: sp.pan });
+        t = this.audio.requestNote({ notes, timbre: s.g.timbre, vel, pan: sp.pan, tone: this._voiceTone(s) });
         if (t != null) this.lastPc = s.pcs[0];
       }
       if (t == null) t = this.audio.nextGrid(0.03).time;
@@ -631,7 +657,7 @@
         target.startDeg = o.g.degrees[0];
         target.voice = this.audio.sustain('grab');
         target.lastDeg = o.g.degrees[0];
-        this.audio.play({ notes: o.g.degrees.map((d) => this.midiOf(d)), timbre: o.g.timbre, vel: 0.14 });
+        this.audio.play({ notes: o.g.degrees.map((d) => this.midiOf(d)), timbre: o.g.timbre, vel: 0.14, tone: this._voiceTone(o) });
       }
       return target;
     }
@@ -1099,7 +1125,7 @@
       // creatures spill out over the first part of the rift, each one born of the other world's species
       if (R.t > 1.5 && R.n < R.max && Math.random() < dt * 1.6) {
         const m = R.migrants ? R.migrants[R.n] : null;
-        const g = m ? C.fillGenome(Object.assign({}, m.g, { degrees: m.g.degrees.slice(), motif: m.g.motif.slice() })) : this._mutate(this._genomeFrom(R.species[Math.floor(Math.random() * R.species.length)]), null, 0.6);
+        const g = m ? C.fillGenome(Object.assign({}, m.g, { degrees: m.g.degrees.slice(), motif: m.g.motif.slice() })) : this._mutate(this._genomeFrom(R.species[Math.floor(Math.random() * R.species.length)], { seed: o.seed, genus: o.pv && o.pv.genus }), null, 0.6);
         // their notes are written in the other world's scale: retranslate into this world's degrees
         const midi = C.degreeToMidi(g.degrees[0], R.scale, R.root);
         let best = 0, bd = 1e9;
@@ -1394,6 +1420,8 @@
           g = { degrees: (Math.random() < 0.5 ? a : b).g.degrees.slice() };
           for (const k of C.GENE_KEYS) g[k] = (Math.random() < 0.5 ? a : b).g[k];
           g.motif = (Math.random() < 0.5 ? a : b).g.motif.slice();
+          // musical culture and instrument: each gene from one parent or the other (hybrids recombine them)
+          if (C.recombine) { g.cult = C.recombine(a.g.cult, b.g.cult, Math.random); g.tone = C.recombine(a.g.tone, b.g.tone, Math.random); }
           g = this._mutate(g, null, 1);
         } else g = this._mutate(a.g, null, 1);
         const mx = b ? a.x + wrap(b.x - a.x) / 2 : a.x, my = b ? a.y + wrap(b.y - a.y) / 2 : a.y;
@@ -1408,7 +1436,7 @@
           if (sp.visible) {
             this.addRing(mx, my, c.size * 0.5, c.size * 3, 1.2, c.col, 0.05, 0.8);
             const notes = (b ? [a.g.degrees[0], b.g.degrees[0], c.g.degrees[0]] : [a.g.degrees[0], c.g.degrees[0]]).map((d) => this.midiOf(d));
-            this.audio.requestNote({ notes, timbre: c.g.timbre, vel: 0.13 * sp.att, pan: sp.pan });
+            this.audio.requestNote({ notes, timbre: c.g.timbre, vel: 0.13 * sp.att, pan: sp.pan, tone: this._voiceTone(c) });
           }
         }
       }
@@ -1484,7 +1512,7 @@
       const allow = C.flash.request(0.4);
       this.addRing(a.x, a.y, a.size * 0.5, a.size * 4, 1.4, a.col, 0.06, allow);
       this.addShock(a.x, a.y, 1.6 * this.shockMul, 4, 0.5, 1.6, 0.5);
-      this.audio.play({ notes: degs.map((d) => this.midiOf(d)), timbre: a.g.timbre, vel: 0.24, pan: sp.pan, dur: 3 });
+      this.audio.play({ notes: degs.map((d) => this.midiOf(d)), timbre: a.g.timbre, vel: 0.24, pan: sp.pan, dur: 3, tone: this._voiceTone(a) });
       this._found('fusion', degs.length === 3 ? 'a triad — three voices, one body' : 'two voices became a chord');
     }
 

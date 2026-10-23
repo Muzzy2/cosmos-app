@@ -59,7 +59,7 @@
     let u = uniCache.get(world.seed);
     const fresh = !u;
     if (!u) {
-      u = new C.Universe(audio.forWorld({ get genus() { return u.genus; } }), music);
+      u = new C.Universe(audio.forWorld({ get genus() { return u.genus; }, get seed() { return u.world && u.world.seed; } }), music);
       u.renderer = renderer;
       u.load(world);
       uniCache.set(world.seed, u);
@@ -199,6 +199,7 @@
     audio.start();
     audio.setSynthOn(settings.synth);
     composer = audio.composer = new C.Composer(audio);
+    composer.onShift = musicShift;
     composer.setWorld(uni);
     pack.load().then(packStatus);
     if (TOUCH) enableMotion();
@@ -1059,6 +1060,31 @@
     const alive = u.singers.filter((x) => !x.dying).length;
     head.textContent = cur.world.name + ' · ' + u.env.word + ' (warmth ' + u.env.warmth.toFixed(2) + ') · ' + alive + ' singers' + (u.songSpecies ? ' · the score sings the song of the ' + u.songSpecies : '');
     here.appendChild(head);
+    // the music here, in words, and taking it away
+    if (composer && composer.uni === u && composer.words) {
+      const mu = document.createElement('div');
+      mu.className = 'env';
+      mu.textContent = '♪ the music here ' + (C.FORM_WORDS[composer.form] || '') + ': ' + composer.words;
+      here.appendChild(mu);
+      const row = document.createElement('div');
+      row.className = 'row';
+      const mid = document.createElement('button');
+      mid.textContent = 'keep the last 2 minutes (MIDI)';
+      mid.onclick = () => saveMidi(u);
+      const rec = document.createElement('button');
+      rec.textContent = C.Capture && C.Capture.rec ? 'stop recording' : 'record a minute';
+      rec.onclick = () => {
+        if (C.Capture.rec) { C.Capture.stop(); return; }
+        const p = C.Capture.record(audio, 60);
+        if (!p) { showToast('this browser cannot record sound', 'the MIDI still works'); return; }
+        showToast('recording', 'a minute of what you hear; tap again to stop sooner');
+        const name = u.world.name.replace(/[^\w ]+/g, '');
+        p.then((blob) => { C.Capture.save(blob, 'COSMOS ' + name + (/mp4/.test(blob.type) ? '.m4a' : /ogg/.test(blob.type) ? '.ogg' : '.webm')); renderJournal(); });
+        renderJournal();
+      };
+      row.append(mid, rec);
+      here.appendChild(row);
+    }
     if (alive) {
       // time-lapse: watch evolution happen instead of waiting for it
       const tl = document.createElement('button');
@@ -1097,6 +1123,7 @@
       const meta = document.createElement('div'); meta.className = 'meta';
       const where = document.createElement('span'); where.textContent = d.worldName + ' · ' + ago(d.at);
       meta.appendChild(where);
+      if (d.notes && d.notes.length) { const mb = document.createElement('button'); mb.textContent = 'MIDI'; mb.onclick = () => saveMidi({ world: { seed: d.world, name: d.worldName } }, d.notes, d.text.slice(0, 40), d.meter); meta.appendChild(mb); }
       if (d.world !== cur.seed) { const go = document.createElement('button'); go.textContent = 'go there'; go.onclick = () => { closePanels(); visitSeed(d.world); }; meta.appendChild(go); }
       else if (d.snapshot && C.multiverse.valid(d.snapshot)) {
         // reproduce it: put this world back exactly as it was at the moment of the discovery
@@ -1174,7 +1201,8 @@
     const away = (cell.ix ? Math.abs(cell.ix) + (cell.ix > 0 ? ' east' : ' west') : '') + (cell.ix && cell.iy ? ' ' : '') + (cell.iy ? Math.abs(cell.iy) + (cell.iy > 0 ? ' north' : ' south') : '');
     const depth = (d === 0 ? (away ? 'beside the origin' : 'origin') : d > 0 ? 'depth ' + d : 'outside ' + -d) + (away ? ' · ' + away : '');
     const key = C.NOTE_NAMES[((uni.root % 12) + 12) % 12] + ' ' + uni.scaleName;
-    $('worldMeta').textContent = `${C.describeWorld(w)} · ${key} · ${Math.round(audio.bpm / (1 - slow * 0.65))} bpm · ${uni.env.word} · ${depth}`;
+    const meter = composer && composer.uni === uni && composer.plan ? ' · ' + (composer.plan.meter === 'free' ? 'free time' : composer.plan.meter) : '';
+    $('worldMeta').textContent = `${C.describeWorld(w)} · ${key}${meter} · ${Math.round(audio.bpm / (1 - slow * 0.65))} bpm · ${uni.env.word} · ${depth}`;
     const census = uni.census();
     const mx = Math.max(1, ...census);
     const chord = $('chord');
@@ -1378,7 +1406,26 @@
   }
   // Everything goes in the journal; only the rarer kinds speak up, at most one every three minutes, so a
   // discovery stays an event (the journal button glows when there is something new to read).
-  const LOUD = { novel: 1, hybrid: 1, invasion: 1, dialect: 1, hunters: 1, cycle: 1, chorus: 1, speciation: 1, diaspora: 1 };
+  const LOUD = { novel: 1, hybrid: 1, invasion: 1, dialect: 1, hunters: 1, cycle: 1, chorus: 1, speciation: 1, diaspora: 1, music: 1 };
+  // The music of a world changed character because of who lives there now (style.js): a discovery, kept
+  // with the two minutes of music around it so it can be taken away as MIDI.
+  function musicShift(u, from, to, st) {
+    if (!u || !u.world) return;
+    const pop = st.pop, two = st.second && st.second.name !== to;
+    const why = pop && pop.foreignShare > 0.25 ? 'newcomers brought it' : pop && pop.hybShare > 0.25 ? 'its hybrids carry both' : 'its people changed';
+    const text = two ? 'two peoples share ' + u.world.name + ': one counts in ' + to + ', the other in ' + st.second.name + ', and the music plays both at once'
+      : 'the music of ' + u.world.name + ' has turned from ' + from + ' to ' + to + ': ' + why;
+    // the music kept with it was mostly played in the meter it is leaving (or both, for two peoples)
+    const meter = C.METERS.find((m) => m.name === from) || (composer && composer.meter);
+    C.Observatory.record(u, { kind: 'music', text, notes: C.Capture ? C.Capture.recent(120, u.world.seed) : null, meter }, { discover });
+  }
+  function saveMidi(u, notes, label, meter) {
+    if (!C.Capture) return;
+    const evs = notes || C.Capture.recent(120, u.world.seed);
+    const bytes = C.Capture.midi(evs, meter || (composer && composer.uni === u ? composer.meter : null), u.world.name + (label ? ' · ' + label : ''));
+    if (!bytes) { showToast('nothing to keep yet', 'let it play a little first'); return; }
+    C.Capture.save(new Blob([bytes], { type: 'audio/midi' }), 'COSMOS ' + u.world.name.replace(/[^\w ]+/g, '') + '.mid');
+  }
   let lastLoud = -1e9;
   function discover(u, rec) {
     discoveries++;
@@ -1451,7 +1498,9 @@
 
     const baseBpm = music.active && music.tempo && music.tempoConf > 0.3 ? music.tempo : cur.world.bpm;
     const wantBpm = baseBpm * (1 - slow * 0.65);
-    if (Math.abs(wantBpm - slowBpmApplied) > 0.4) { audio.setBpm(wantBpm); slowBpmApplied = wantBpm; }
+    // (compare with the engine's own tempo: preparing a world inside an orb sets it to that world's, so the
+    // world you're in would keep the wrong tempo until something else changed)
+    if (Math.abs(wantBpm - slowBpmApplied) > 0.4 || Math.abs(wantBpm - audio.bpm) > 0.4) { audio.setBpm(wantBpm); slowBpmApplied = wantBpm; }
     audio.setSlow(slow);
     C.flash.guard = settings.strongGuard ? 1 : 0.5;
     C.flash.update(realDt);
@@ -1460,6 +1509,7 @@
     updateStack(realDt);
     frameBudget(realDt);
     uni = cur.uni;
+    if (C.Capture) C.Capture.world = cur.seed;
 
     // which two worlds are on screen, and how far through the membrane are we?
     let A = cur, B = null, camA = cam, camB = null, t = 0, link = null;

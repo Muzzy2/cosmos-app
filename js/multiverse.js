@@ -136,9 +136,14 @@
   // ------------------------------------------------------------------ restoring
   // A record is checked all the way down before anything in the world is touched; bad entries are dropped.
   const fin = (x) => typeof x === 'number' && isFinite(x);
+  // musical genes (cult, tone) that are missing or damaged are dropped and refilled from the world's culture
+  const goodArr = (a, n) => Array.isArray(a) && a.length === n && a.every((x) => fin(x) && x >= 0 && x <= 1);
   function goodGenome(g) {
-    return g && typeof g === 'object' && Array.isArray(g.degrees) && g.degrees.length >= 1 && g.degrees.length <= 3 && g.degrees.every(fin) &&
+    const ok = g && typeof g === 'object' && Array.isArray(g.degrees) && g.degrees.length >= 1 && g.degrees.length <= 3 && g.degrees.every(fin) &&
       ['timbre', 'lobes', 'rhythm', 'speed', 'social', 'spike'].every((k) => fin(g[k])) && (g.motif == null || (Array.isArray(g.motif) && g.motif.length === 4 && g.motif.every(fin)));
+    if (ok && g.cult != null && !goodArr(g.cult, C.CULTURE_KEYS ? C.CULTURE_KEYS.length : 8)) delete g.cult;
+    if (ok && g.tone != null && !goodArr(g.tone, C.TONE_KEYS ? C.TONE_KEYS.length : 4)) delete g.tone;
+    return ok;
   }
   const goodSinger = (m) => m && fin(m.x) && fin(m.y) && fin(m.energy) && goodGenome(m.g);
   const goodSpecies = (sp) => sp && typeof sp.id === 'string' && Array.isArray(sp.centroid) && sp.centroid.length === 13 && sp.centroid.every(fin);
@@ -318,6 +323,7 @@
           let g = { degrees: (Math.random() < 0.5 ? a : mate).g.degrees.slice() };
           for (const k of C.GENE_KEYS) g[k] = (Math.random() < 0.5 ? a : mate).g[k];
           g.motif = (Math.random() < 0.5 ? a : mate).g.motif.slice();
+          if (C.recombine) { g.cult = C.recombine(a.g.cult, mate.g.cult, Math.random); g.tone = C.recombine(a.g.tone, mate.g.tone, Math.random); }
           kids.push({ g: u._mutate(g, null, 1), a, b: mate });
           a.energy -= 0.55; mate.energy -= 0.55;
         } else if (a.energy > 2.7) {

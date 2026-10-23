@@ -203,11 +203,12 @@
       this.scoreLP.Q.value = 0.5;
       this.scoreBus.connect(this.scoreLP);
       this.scoreLP.connect(this.master);
-      const sRev = ctx.createGain();
+      // each world's culture sets how much hall and echo its score gets (score.js)
+      const sRev = (this.scoreRev = ctx.createGain());
       sRev.gain.value = 0.38;
       this.scoreLP.connect(sRev);
       sRev.connect(this.reverbIn);
-      const sDly = ctx.createGain();
+      const sDly = (this.scoreDly = ctx.createGain());
       sDly.gain.value = 0.1;
       this.scoreLP.connect(sDly);
       sDly.connect(this.delayIn);
@@ -297,6 +298,8 @@
       this.bpm = b;
       this.clockStart = now - pos * this.tickDur();
       this._setDelayTimes();
+      // the beat the tempo changed on, for the MIDI tempo map (capture.js)
+      if (C.Capture) C.Capture.tempo(now, pos / 4, b);
     }
     // phase-lock nudge from detected beats in your music
     nudgePhase(onsetTime, amount) {
@@ -373,9 +376,11 @@
       pan.connect(this.synthIn);
       const timbre = spec.timbre == null ? 0.3 : spec.timbre;
       const dur = spec.dur || (timbre < 0.33 ? 2.2 : timbre < 0.66 ? 2.6 : 0.9);
-      // the world's band decides what a creature sounds like; its timbre picks soft, middle or edgy
+      // the world's band decides what a creature sounds like; its timbre picks soft, middle or edgy. A
+      // creature that carries its own instrument (its inherited tone genes) plays that instead.
       const fam = C.familyOf(spec.fam || this.defaultFam);
-      const instName = C.INSTR[spec.voice] ? spec.voice : fam.notes[timbre < 0.33 ? 0 : timbre < 0.66 ? 1 : 2];
+      const famInst = fam.notes[timbre < 0.33 ? 0 : timbre < 0.66 ? 1 : 2];
+      const instName = C.INSTR[spec.voice] ? spec.voice : spec.tone && C.Voices && !spec.freq ? C.Voices.forTone(spec.tone, famInst) : famInst;
       // your own sound pack, if you loaded one, sings for the creatures instead of the world's band
       const pack = this.userPack && !spec.voice && !spec.freq ? this.userPack : null;
       const inst = pack ? (e, t0, f, v, d, dest) => pack.voice(e, t0, f, v, d, dest) : C.INSTR[instName];
@@ -388,6 +393,7 @@
         const pc = ((Math.round(m) % 12) + 12) % 12;
         const v = chord && !spec.freq && !chord.has(pc) ? vel * 0.6 : vel;
         end = Math.max(end, inst(this, t, f, v, dur, pan));
+        if (C.Capture && !spec.freq) C.Capture.note(this, 'creatures', instName, m, t, v, dur, spec.world);
       }
       this.voiceEnds.push(end);
       for (let i = 1; i < notes.length; i++) this.voiceEnds.push(end); // the budget counts every note
@@ -401,14 +407,7 @@
       if (!this.ctx) return 0;
       const inst = C.INSTR[name];
       if (!inst) return 0;
-      if (!this.scorePans) {
-        this.scorePans = [-0.6, -0.3, 0, 0.3, 0.6].map((x) => {
-          const p = this.ctx.createStereoPanner();
-          p.pan.value = x;
-          p.connect(this.scoreBus);
-          return p;
-        });
-      }
+      this._lanes();
       const t = Math.max(time, this.ctx.currentTime);
       const lane = Math.round(C.clamp((pan || 0) / 0.3, -2, 2)) + 2;
       // a few cents of drift per note, so held tones never sound sequenced
@@ -416,13 +415,32 @@
       return inst(this, t, C.midiToFreq(midi) * drift, vel, dur, this.scorePans[lane]);
     }
 
+    _lanes() {
+      if (this.scorePans) return;
+      this.scorePans = [-0.6, -0.3, 0, 0.3, 0.6].map((x) => {
+        const p = this.ctx.createStereoPanner();
+        p.pan.value = x;
+        p.connect(this.scoreBus);
+        return p;
+      });
+    }
+    // A grain of a procedural voice (a short window into its sound), on the score's lanes.
+    playGrain(name, midi, time, vel, dur, pan) {
+      if (!this.ctx || !C.Voices) return 0;
+      this._lanes();
+      const t = Math.max(time, this.ctx.currentTime);
+      const lane = Math.round(C.clamp((pan || 0) / 0.3, -2, 2)) + 2;
+      return C.Voices.grain(name, this, t, C.midiToFreq(midi), vel, dur, this.scorePans[lane]);
+    }
+
     // A world's view of the engine: its notes are played by its own band.
     forWorld(u) {
       const eng = this;
       return new Proxy(eng, {
         get(target, k) {
-          if (k === 'play') return (spec, time) => eng.play(Object.assign({ fam: u.genus }, spec), time);
-          if (k === 'requestNote') return (spec) => eng.requestNote(Object.assign({ fam: u.genus }, spec));
+          // (world: which world sang it, so a capture of the music files every note under the world it came from)
+          if (k === 'play') return (spec, time) => eng.play(Object.assign({ fam: u.genus, world: u.seed }, spec), time);
+          if (k === 'requestNote') return (spec) => eng.requestNote(Object.assign({ fam: u.genus, world: u.seed }, spec));
           const v = target[k];
           return typeof v === 'function' ? v.bind(target) : v;
         },
@@ -439,6 +457,7 @@
       o.frequency.setValueAtTime(freq * 3, t);
       o.frequency.exponentialRampToValueAtTime(freq, t + 0.07);
       const g = ctx.createGain();
+      g.gain.value = 0;
       g.gain.setValueAtTime(0, t);
       g.gain.linearRampToValueAtTime(vel, t + 0.003);
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
@@ -479,6 +498,7 @@
       bp.frequency.exponentialRampToValueAtTime(160, t + 0.9 + strength * 0.6);
       const ng = ctx.createGain();
       const v = 0.12 + 0.25 * strength;
+      ng.gain.value = 0;
       ng.gain.setValueAtTime(0, t);
       ng.gain.linearRampToValueAtTime(v, t + 0.01);
       ng.gain.exponentialRampToValueAtTime(0.0005, t + 1.2 + strength);
@@ -488,6 +508,7 @@
       o.frequency.setValueAtTime(110, t);
       o.frequency.exponentialRampToValueAtTime(38, t + 0.5);
       const og = ctx.createGain();
+      og.gain.value = 0;
       og.gain.setValueAtTime(0, t);
       og.gain.linearRampToValueAtTime(0.18 + 0.25 * strength, t + 0.005);
       og.gain.exponentialRampToValueAtTime(0.001, t + 0.9 + strength * 0.5);
@@ -513,6 +534,7 @@
       bp.frequency.setValueAtTime(up ? 200 : 4000, t);
       bp.frequency.exponentialRampToValueAtTime(up ? 5000 : 180, t + dur);
       const g = ctx.createGain();
+      g.gain.value = 0;
       g.gain.setValueAtTime(0, t);
       g.gain.linearRampToValueAtTime(0.22, t + dur * 0.8);
       g.gain.linearRampToValueAtTime(0, t + dur * 1.15);

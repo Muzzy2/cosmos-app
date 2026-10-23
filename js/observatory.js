@@ -274,6 +274,9 @@
       species: ev.sp ? { id: ev.sp.id, name: ev.sp.name, descriptor: ev.sp.centroid.map((x) => +x.toFixed(3)), motif: ev.sp.motif, count: ev.sp.count } : null,
       score: ev.score != null ? +ev.score.toFixed(3) : null,
       snapshot: C.multiverse ? C.multiverse.recordOf(u) : null,
+      // a musical discovery keeps the music around it (compact note events, for MIDI)
+      meter: ev.meter ? { n: ev.meter.n, g: ev.meter.g.slice(), name: ev.meter.name } : null,
+      notes: ev.notes ? ev.notes.slice(-1500).map((e) => ({ beat: +e.beat.toFixed(3), layer: e.layer, inst: e.inst, midi: e.midi, vel: +e.vel.toFixed(3), dur: +e.dur.toFixed(2), bpm: Math.round(e.bpm) })) : null,
     };
     journal.add(rec);
     if (hooks && hooks.discover) hooks.discover(u, rec);

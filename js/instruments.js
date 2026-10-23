@@ -40,6 +40,7 @@
   // percussive envelope: quick attack, exponential decay
   function perc(ctx, t, peak, attack, decay) {
     const g = ctx.createGain();
+    g.gain.value = 0; // (silent before t: a noise source started part-way into its buffer would click)
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(peak, t + attack);
     g.gain.exponentialRampToValueAtTime(Math.max(1e-5, peak * 1e-4), t + attack + decay);
@@ -48,6 +49,7 @@
   // held envelope: attack, hold until `off`, then release
   function held(ctx, t, peak, attack, off, release) {
     const g = ctx.createGain();
+    g.gain.value = 0;
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(peak, t + attack);
     g.gain.setValueAtTime(peak, Math.max(t + attack, off));
@@ -393,6 +395,7 @@
     lp.frequency.setValueAtTime(420, t);
     lp.frequency.exponentialRampToValueAtTime(90, t + 3.5);
     const g = ctx.createGain();
+    g.gain.value = 0;
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(v, t + 0.25);
     g.gain.exponentialRampToValueAtTime(v * 1e-4, end);
@@ -414,6 +417,7 @@
     bp.frequency.setValueAtTime(300, t);
     bp.frequency.exponentialRampToValueAtTime(6000, t + d);
     const g = ctx.createGain();
+    g.gain.value = 0;
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(v, t + d * 0.95);
     g.gain.linearRampToValueAtTime(0, t + d + 0.04);
@@ -442,8 +446,8 @@
     scope:     { notes: ['sine', 'glass', 'sine'],          pad: 'pad',       bass: 'bass',      arp: null,      lead: null,       groove: null, maxE: 0.5, trim: 1.16 },
     blackhole: { notes: ['strings', 'fmbell', 'choir'],     pad: 'strings',   bass: 'bass',      arp: 'fmbell',  lead: 'choir',    groove: 'deep', maxE: 0.75, ext: 'seventh', trim: 0.86 },
     julia:     { notes: ['glassharp', 'celesta', 'glass'],  pad: 'glassharp', bass: 'bass',      arp: 'celesta', lead: 'glass',    groove: null, maxE: 0.55, ext: 'add9', trim: 1.32 },
-    tunnel:    { notes: ['pluck', 'epiano', 'chip'],        pad: 'pad',       bass: 'pluckbass', arp: 'pluck',   lead: 'brass',    groove: 'drive', maxE: 1, minE: 0.58, bassGain: 2.2, drumGain: 1.8, trim: 1.01 },
-    cathedral: { notes: ['organ', 'choir', 'glass'],        pad: 'organ',     bass: 'bass',      arp: 'celesta', lead: 'choir',    groove: null, maxE: 0.6, bassGain: 0.6, trim: 1.24 },
+    tunnel:    { notes: ['pluck', 'epiano', 'chip'],        pad: 'pad',       bass: 'pluckbass', arp: 'pluck',   lead: 'brass',    groove: 'drive', maxE: 1, minE: 0.58, bassGain: 2.2, drumGain: 1.8, trim: 0.88 },
+    cathedral: { notes: ['organ', 'choir', 'glass'],        pad: 'organ',     bass: 'bass',      arp: 'celesta', lead: 'choir',    groove: null, maxE: 0.6, bassGain: 0.6, trim: 1.34 },
     life:      { notes: ['chip', 'marimba', 'celesta'],     pad: 'organ',     bass: 'pluckbass', arp: 'chip',    lead: 'chip',     groove: 'chip', maxE: 0.9, minE: 0.4, bassGain: 1.5, drumGain: 1.3, trim: 1.45 },
     lenia:     { notes: ['glassharp', 'marimba', 'choir'],  pad: 'choir',     bass: 'bass',      arp: 'glass',   lead: 'flute',    groove: 'soft', maxE: 0.6, ext: 'add9', trim: 1.15 },
     storm:     { notes: ['strings', 'brass', 'fmbell'],     pad: 'strings',   bass: 'bass',      arp: 'glass',   lead: 'brass',    groove: 'toms', maxE: 0.9, minE: 0.35, bassGain: 1.4, drumGain: 1.4, trim: 0.71 },
